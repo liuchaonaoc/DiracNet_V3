@@ -1,0 +1,31 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "rc-pinn-art"
+version = "3.0.0"
+description = "PINN-ART: Physics-Informed Neural Network for Atomic Radiative Transfer"
+requires-python = ">=3.10"
+dependencies = [
+  "jax[cuda12]>=0.4.28",
+  "flax>=0.8.0",
+  "optax>=0.2.0",
+  "numpy>=1.24",
+  "scipy>=1.10",
+  "pandas>=2.0",
+  "pyarrow>=14.0",
+  "pyyaml>=6.0",
+  "matplotlib>=3.7",
+  "tqdm>=4.65",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=7.4"]
+
+[tool.setuptools.packages.find]
+include = ["pinn_art*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]

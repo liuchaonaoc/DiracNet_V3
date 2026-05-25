@@ -1,0 +1,60 @@
+# Stage A — Round 1: hydrogenic ions H..O (Z=1..8), PDE-only training
+# Usage: see docs/STAGE_A_ROUND1.md
+
+seed: 42
+
+grid:
+  r_min: 1.0e-4
+  r_max: 50.0
+  n_grid: 256
+  scheme: loglinear
+
+coords:
+  c1: 1.0
+  c2: 1.0
+
+model:
+  n_orb_max: 16
+  n_csf_max: 8
+  d_branch: 128
+  d_trunk: 128
+  n_siren_layers: 4
+  omega_0: 20.0
+  apply_lowdin: false  # Stage A 让 norm/ortho loss 真正监督，不强制归一
+
+ci:
+  enabled: false
+
+stage_a:
+  n_epochs: 1000
+  batch_size: 8
+  weights:
+    pde: 1.0
+    ortho: 100.0
+    asym: 0.1
+    norm: 10.0
+    v_prior: 5.0       # 拉 V 接近 -Z/r，避免漂移
+    v_smooth: 1.0e-6   # -Z/r 二阶差分本身很大；权重要低
+  gate:
+    cos_threshold: 0.99
+    pde_threshold: 1.0e-2
+    e_orb_meV_threshold: 50.0
+
+optimizer:
+  lr_trunk: 3.0e-4
+  lr_branch: 1.0e-4
+  weight_decay: 1.0e-4
+  grad_clip: 1.0
+
+training:
+  ckpt_dir: ./checkpoints/v3_phase1_stage_a_z1_8
+  log_dir: ./logs/v3_phase1_stage_a_z1_8
+  steps_per_epoch: 12
+  val_every_epochs: 25
+  ckpt_every_epochs: 50
+  shuffle_each_epoch: true
+
+dataset:
+  manifest: data_cache/manifest_hydrogenic_z1_8.parquet
+  n_orb_max: 16
+  n_csf_max: 8

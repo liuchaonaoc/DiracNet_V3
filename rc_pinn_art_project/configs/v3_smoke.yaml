@@ -1,0 +1,33 @@
+seed: 0
+
+grid:
+  n_grid: 64
+  r_max: 20.0
+
+model:
+  d_branch: 32
+  d_trunk: 32
+  n_siren_layers: 2
+  omega_0: 10.0
+  apply_lowdin: false
+
+ci:
+  enabled: true
+
+stage_a:
+  n_epochs: 3
+  batch_size: 2
+  weights:
+    pde: 1.0
+    ortho: 10.0
+    asym: 0.0
+    norm: 1.0
+    v_prior: 0.01
+    v_smooth: 1.0e-4
+
+training:
+  steps_per_epoch: 2
+  ckpt_dir: ./checkpoints/v3_smoke
+
+dataset:
+  manifest: data_cache/manifest_hydrogenic_v3.parquet

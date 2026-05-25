@@ -1,0 +1,71 @@
+# Stage A — Phase 2: relaxed Gate + 1000 more epochs (resume from Phase 1)
+# See docs/STAGE_A_PHASE2.md
+
+seed: 42
+
+grid:
+  r_min: 1.0e-4
+  r_max: 50.0
+  n_grid: 256
+  scheme: loglinear
+
+coords:
+  c1: 1.0
+  c2: 1.0
+
+model:
+  n_orb_max: 16
+  n_csf_max: 8
+  d_branch: 128
+  d_trunk: 128
+  n_siren_layers: 4
+  omega_0: 20.0
+  apply_lowdin: false
+
+ci:
+  enabled: false
+
+stage_a:
+  n_epochs: 1000
+  batch_size: 8
+  weights:
+    pde: 1.0
+    ortho: 100.0
+    asym: 0.01          # Phase 1 末段 asym 偏大，略降以免牵制 pde
+    norm: 10.0
+    v_prior: 5.0
+    v_smooth: 1.0e-6
+  # Phase 2 训练期用放宽 Gate 验收；终态仍对照 gate_strict
+  gate:
+    cos_threshold: 0.95
+    pde_threshold: 1.0
+    e_orb_meV_threshold: 50.0
+  gate_strict:
+    cos_threshold: 0.99
+    pde_threshold: 1.0e-2
+    e_orb_meV_threshold: 50.0
+  gate_mid:
+    cos_threshold: 0.98
+    pde_threshold: 0.5
+    e_orb_meV_threshold: 50.0
+
+optimizer:
+  lr_trunk: 1.0e-4      # 较 Phase 1 略降，fine-tune
+  lr_branch: 5.0e-5
+  weight_decay: 1.0e-4
+  grad_clip: 1.0
+
+training:
+  ckpt_dir: ./checkpoints/v3_phase1_stage_a_z1_8_phase2
+  log_dir: ./logs/v3_phase1_stage_a_z1_8_phase2
+  steps_per_epoch: 12
+  val_every_epochs: 25
+  ckpt_every_epochs: 50
+  shuffle_each_epoch: true
+  # 默认 resume 源（可用 CLI --resume 覆盖）
+  resume_from: ./checkpoints/v3_phase1_stage_a_z1_8/stage_a_last.msgpack
+
+dataset:
+  manifest: data_cache/manifest_hydrogenic_z1_8.parquet
+  n_orb_max: 16
+  n_csf_max: 8
