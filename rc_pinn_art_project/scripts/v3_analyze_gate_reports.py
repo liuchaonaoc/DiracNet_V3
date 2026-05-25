@@ -1,9 +1,13 @@
 #!/usr/bin/env python3
-"""Analyze gate_a_detailed.csv: failure reasons + Phase1 vs Phase2 diff."""
+"""Analyze gate_a_detailed.csv: failure reasons + multi-phase diffs.
+
+Supports Phase 1 / 2 / 3 comparison when corresponding CSV files exist.
+Outputs under ``logs/gate_analysis/`` by default.
+"""
 
 from __future__ import annotations
 
-import json
+import argparse
 import sys
 from pathlib import Path
 
@@ -16,6 +20,12 @@ GATES = {
     "relaxed": {"cos": 0.95, "pde": 1.0, "e_meV": 50.0},
     "mid": {"cos": 0.98, "pde": 0.5, "e_meV": 50.0},
     "strict": {"cos": 0.99, "pde": 0.01, "e_meV": 50.0},
+}
+
+PHASE_PATHS = {
+    "phase1_1000ep": ROOT / "logs/v3_phase1_stage_a_z1_8/gate_a_detailed.csv",
+    "phase2_1000ep": ROOT / "logs/v3_phase1_stage_a_z1_8_phase2/gate_a_detailed.csv",
+    "phase3_1000ep": ROOT / "logs/v3_phase1_stage_a_z1_8_phase3/gate_a_detailed.csv",
 }
 
 
@@ -51,22 +61,18 @@ def analyze_failure_stats(df: pd.DataFrame, label: str, gate_name: str) -> pd.Da
             "dE_meV": r["dE_meV"],
             "verdict": _verdict(r, th),
         })
-    out = pd.DataFrame(rows)
-    return out
+    return pd.DataFrame(rows)
 
 
 def summarize_reasons(det: pd.DataFrame) -> pd.DataFrame:
-    """Count failure reason combinations."""
     fail = det[det["verdict"] == "FAIL"]
     if fail.empty:
-        return pd.DataFrame([{"fail_reason": "PASS", "count": len(det)}])
+        return pd.DataFrame(columns=["phase", "gate", "fail_reason", "count"])
     g = fail.groupby(["phase", "gate", "fail_reason"]).size().reset_index(name="count")
-    g = g.sort_values(["phase", "gate", "count"], ascending=[True, True, False])
-    return g
+    return g.sort_values(["phase", "gate", "count"], ascending=[True, True, False])
 
 
 def summarize_by_criterion(det: pd.DataFrame) -> pd.DataFrame:
-    """Per criterion fail counts."""
     rows = []
     for (phase, gate), g in det.groupby(["phase", "gate"]):
         n = len(g)
@@ -85,41 +91,66 @@ def summarize_by_criterion(det: pd.DataFrame) -> pd.DataFrame:
     return pd.DataFrame(rows)
 
 
-def build_diff(p1: pd.DataFrame, p2: pd.DataFrame, gate_name: str) -> pd.DataFrame:
+def build_pass_matrix(phases: dict[str, pd.DataFrame]) -> pd.DataFrame:
+    """Rows = gate tier; columns = phase labels with pass counts."""
+    rows = []
+    for gate_name, th in GATES.items():
+        row = {"gate": gate_name, "cos_th": th["cos"], "pde_th": th["pde"], "dE_meV_th": th["e_meV"]}
+        for label, df in phases.items():
+            det = analyze_failure_stats(df, label, gate_name)
+            row[label] = int((det["verdict"] == "PASS").sum())
+        rows.append(row)
+    return pd.DataFrame(rows)
+
+
+def build_diff(
+    df_a: pd.DataFrame,
+    df_b: pd.DataFrame,
+    gate_name: str,
+    *,
+    label_a: str = "a",
+    label_b: str = "b",
+) -> pd.DataFrame:
     th = GATES[gate_name]
     key = ["Z", "n"]
-    m = p1.merge(p2, on=key, suffixes=("_p1", "_p2"))
+    m = df_a.merge(df_b, on=key, suffixes=("_a", "_b"))
     m["gate"] = gate_name
-    m["cos_delta"] = m["cos_p2"] - m["cos_p1"]
-    m["pde_delta"] = m["pde_p2"] - m["pde_p1"]
-    m["dE_delta_meV"] = m["dE_meV_p2"] - m["dE_meV_p1"]
-    m["verdict_p1"] = m.apply(
-        lambda r: _verdict(pd.Series({"cos": r["cos_p1"], "pde": r["pde_p1"], "dE_meV": r["dE_meV_p1"]}), th),
+    m["phase_a"] = label_a
+    m["phase_b"] = label_b
+    m["cos_delta"] = m["cos_b"] - m["cos_a"]
+    m["pde_delta"] = m["pde_b"] - m["pde_a"]
+    m["dE_delta_meV"] = m["dE_meV_b"] - m["dE_meV_a"]
+    m["verdict_a"] = m.apply(
+        lambda r: _verdict(
+            pd.Series({"cos": r["cos_a"], "pde": r["pde_a"], "dE_meV": r["dE_meV_a"]}), th
+        ),
         axis=1,
     )
-    m["verdict_p2"] = m.apply(
-        lambda r: _verdict(pd.Series({"cos": r["cos_p2"], "pde": r["pde_p2"], "dE_meV": r["dE_meV_p2"]}), th),
+    m["verdict_b"] = m.apply(
+        lambda r: _verdict(
+            pd.Series({"cos": r["cos_b"], "pde": r["pde_b"], "dE_meV": r["dE_meV_b"]}), th
+        ),
         axis=1,
     )
     m["status"] = m.apply(_diff_status, axis=1)
+    elem_col = "element_a" if "element_a" in m.columns else "element"
     cols = [
-        "gate", "Z", "element_p1", "n",
-        "cos_p1", "cos_p2", "cos_delta",
-        "pde_p1", "pde_p2", "pde_delta",
-        "dE_meV_p1", "dE_meV_p2", "dE_delta_meV",
-        "verdict_p1", "verdict_p2", "status",
+        "gate", "phase_a", "phase_b", "Z", elem_col, "n",
+        "cos_a", "cos_b", "cos_delta",
+        "pde_a", "pde_b", "pde_delta",
+        "dE_meV_a", "dE_meV_b", "dE_delta_meV",
+        "verdict_a", "verdict_b", "status",
     ]
     return m[cols].sort_values(["Z", "n"])
 
 
 def _diff_status(r) -> str:
-    if r["verdict_p1"] == "PASS" and r["verdict_p2"] == "PASS":
+    if r["verdict_a"] == "PASS" and r["verdict_b"] == "PASS":
         return "PASS→PASS"
-    if r["verdict_p1"] == "FAIL" and r["verdict_p2"] == "PASS":
+    if r["verdict_a"] == "FAIL" and r["verdict_b"] == "PASS":
         return "FAIL→PASS ✓"
-    if r["verdict_p1"] == "PASS" and r["verdict_p2"] == "FAIL":
+    if r["verdict_a"] == "PASS" and r["verdict_b"] == "FAIL":
         return "PASS→FAIL ✗"
-    # both fail — which metric got worse?
     worse = []
     if r["cos_delta"] < -0.01:
         worse.append("cos↓")
@@ -140,73 +171,134 @@ def _diff_status(r) -> str:
     return f"FAIL→FAIL ({tag or 'mixed'})"
 
 
+def _diff_summary(diff: pd.DataFrame, label_a: str, label_b: str, gate_name: str) -> list[str]:
+    n_improve = int((diff["status"] == "FAIL→PASS ✓").sum())
+    n_regress = int((diff["status"] == "PASS→FAIL ✗").sum())
+    both_pass = int((diff["status"] == "PASS→PASS").sum())
+    both_fail = int(diff["status"].str.startswith("FAIL→FAIL").sum())
+    return [
+        f"### {label_a} → {label_b}（{gate_name}）",
+        f"- FAIL→PASS: **{n_improve}**",
+        f"- PASS→FAIL: **{n_regress}**",
+        f"- 两阶段都过: **{both_pass}**",
+        f"- 仍 FAIL: **{both_fail}**",
+        "",
+    ]
+
+
+def summarize_strict_by_Z(df: pd.DataFrame, phase_label: str) -> pd.DataFrame:
+    th = GATES["strict"]
+    rows = []
+    for Z, g in df.groupby("Z"):
+        sub = g.copy()
+        pass_mask = (
+            (sub["cos"] >= th["cos"])
+            & (sub["pde"] <= th["pde"])
+            & (sub["dE_meV"] <= th["e_meV"])
+        )
+        fail_n = sorted(sub.loc[~pass_mask, "n"].astype(int).tolist())
+        rows.append({
+            "phase": phase_label,
+            "Z": int(Z),
+            "element": str(sub["element"].iloc[0]),
+            "strict_pass": int(pass_mask.sum()),
+            "strict_total": len(sub),
+            "fail_n": ",".join(str(x) for x in fail_n) if fail_n else "",
+        })
+    return pd.DataFrame(rows)
+
+
 def write_markdown(
     out_path: Path,
+    *,
     crit: pd.DataFrame,
+    pass_matrix: pd.DataFrame,
     reason_summary: pd.DataFrame,
-    diff_relaxed: pd.DataFrame,
-    diff_strict: pd.DataFrame,
+    strict_by_z: pd.DataFrame,
+    diff_sections: list[str],
+    diff_tables: list[tuple[str, pd.DataFrame]],
+    phases_present: list[str],
 ) -> None:
     lines = [
-        "# Gate A 分析报告（自动生成）",
+        "# Gate A 分析报告（Phase 1 / 2 / 3）",
         "",
-        "> 由 `scripts/v3_analyze_gate_reports.py` 生成。",
+        "> 自动生成：`python scripts/v3_analyze_gate_reports.py`",
         "",
-        "## 1. 分项失败统计（按阈值）",
+        f"> 包含阶段：{', '.join(phases_present)}",
+        "",
+        "## 1. 三阶段 Gate 通过数总览",
+        "",
+        pass_matrix.to_markdown(index=False),
+        "",
+        "## 2. 分项失败统计（按阶段 × 阈值）",
         "",
         crit.to_markdown(index=False),
         "",
-        "## 2. 失败原因组合频次",
+        "## 3. strict Gate 按元素汇总",
         "",
-        reason_summary.to_markdown(index=False),
+        strict_by_z.to_markdown(index=False),
         "",
-        "## 3. Phase 1 vs Phase 2 逐行对比（放宽 Gate）",
-        "",
-        "阈值: cos≥0.95, pde≤1.0, dE≤50 meV",
-        "",
-        diff_relaxed.to_markdown(index=False),
-        "",
-        "## 4. Phase 1 vs Phase 2 逐行对比（严格 Gate）",
-        "",
-        "阈值: cos≥0.99, pde≤0.01, dE≤50 meV",
-        "",
-        diff_strict.to_markdown(index=False),
-        "",
-        "## 5. 变化摘要",
+        "## 4. 失败原因组合频次",
         "",
     ]
-    for gate_name, diff in [("relaxed", diff_relaxed), ("strict", diff_strict)]:
-        n_improve = (diff["status"] == "FAIL→PASS ✓").sum()
-        n_regress = (diff["status"] == "PASS→FAIL ✗").sum()
-        lines.append(f"### {gate_name}")
-        lines.append(f"- FAIL→PASS: **{n_improve}** 行")
-        lines.append(f"- PASS→FAIL: **{n_regress}** 行")
-        lines.append(f"- 仍 FAIL: **{(diff['status'].str.startswith('FAIL→FAIL')).sum()}** 行")
+    if reason_summary.empty:
+        lines.append("（无 FAIL 行）")
+    else:
+        lines.append(reason_summary.to_markdown(index=False))
+    lines.extend(["", "## 5. 逐行对比摘要", ""])
+    lines.extend(diff_sections)
+    for title, diff_df in diff_tables:
+        lines.extend([
+            f"### {title}",
+            "",
+            f"阈值见 Gate 表；共 {len(diff_df)} 行。完整 CSV 见 `logs/gate_analysis/`。",
+            "",
+        ])
+        # Show only status changes + worst regressions in markdown (full data in CSV)
+        changes = diff_df[diff_df["status"] != "PASS→PASS"]
+        if len(changes) > 40:
+            lines.append(f"*（仅展示 {len(changes)} 行中有变化的前 40 行；完整见 CSV）*")
+            lines.append("")
+            lines.append(changes.head(40).to_markdown(index=False))
+        elif len(changes) > 0:
+            lines.append(changes.to_markdown(index=False))
+        else:
+            lines.append("（无变化：全部 PASS→PASS）")
         lines.append("")
 
     out_path.write_text("\n".join(lines), encoding="utf-8")
 
 
+def load_phases(extra_paths: dict[str, Path] | None = None) -> dict[str, pd.DataFrame]:
+    paths = {**PHASE_PATHS}
+    if extra_paths:
+        paths.update(extra_paths)
+    phases: dict[str, pd.DataFrame] = {}
+    for label, path in paths.items():
+        if path.exists():
+            phases[label] = pd.read_csv(path)
+        else:
+            print(f"Skip missing: {path}")
+    if not phases:
+        raise FileNotFoundError("No gate_a_detailed.csv found for any phase")
+    return phases
+
+
 def main():
-    p1_path = ROOT / "logs/v3_phase1_stage_a_z1_8/gate_a_detailed.csv"
-    p2_path = ROOT / "logs/v3_phase1_stage_a_z1_8_phase2/gate_a_detailed.csv"
-    out_dir = ROOT / "logs/gate_analysis"
+    ap = argparse.ArgumentParser(description="Gate A multi-phase analysis")
+    ap.add_argument("--out-dir", type=Path, default=ROOT / "logs/gate_analysis")
+    args = ap.parse_args()
+    out_dir: Path = args.out_dir
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    if not p1_path.exists():
-        print(f"Missing {p1_path}")
-        sys.exit(1)
-    if not p2_path.exists():
-        print(f"Missing {p2_path}")
-        sys.exit(1)
+    phases = load_phases()
+    phase_labels = list(phases.keys())
 
-    p1 = pd.read_csv(p1_path)
-    p2 = pd.read_csv(p2_path)
-
+    # Per-row failure detail (all phases × all gates)
     all_det = []
-    for gate in ("relaxed", "mid", "strict"):
-        all_det.append(analyze_failure_stats(p1, "phase1_1000ep", gate))
-        all_det.append(analyze_failure_stats(p2, "phase2_1000ep", gate))
+    for label, df in phases.items():
+        for gate in GATES:
+            all_det.append(analyze_failure_stats(df, label, gate))
     det = pd.concat(all_det, ignore_index=True)
     det.to_csv(out_dir / "failure_reasons_per_row.csv", index=False)
 
@@ -216,27 +308,79 @@ def main():
     reason_summary = summarize_reasons(det)
     reason_summary.to_csv(out_dir / "failure_reason_combos.csv", index=False)
 
-    diff_relaxed = build_diff(p1, p2, "relaxed")
-    diff_strict = build_diff(p1, p2, "strict")
-    diff_relaxed.to_csv(out_dir / "phase1_vs_phase2_relaxed.csv", index=False)
-    diff_strict.to_csv(out_dir / "phase1_vs_phase2_strict.csv", index=False)
+    pass_matrix = build_pass_matrix(phases)
+    pass_matrix.to_csv(out_dir / "phase123_pass_matrix.csv", index=False)
+
+    strict_parts = [summarize_strict_by_Z(df, label) for label, df in phases.items()]
+    strict_by_z = pd.concat(strict_parts, ignore_index=True)
+    strict_by_z.to_csv(out_dir / "strict_pass_by_element.csv", index=False)
+
+    # Pairwise diffs for available phases
+    diff_sections: list[str] = []
+    diff_tables: list[tuple[str, pd.DataFrame]] = []
+    pairs = [
+        ("phase1_1000ep", "phase2_1000ep"),
+        ("phase1_1000ep", "phase3_1000ep"),
+        ("phase2_1000ep", "phase3_1000ep"),
+    ]
+    for gate in ("relaxed", "mid", "strict"):
+        for la, lb in pairs:
+            if la not in phases or lb not in phases:
+                continue
+            diff = build_diff(phases[la], phases[lb], gate, label_a=la, label_b=lb)
+            fname = f"{la}_vs_{lb}_{gate}.csv"
+            diff.to_csv(out_dir / fname, index=False)
+            diff_sections.extend(_diff_summary(diff, la, lb, gate))
+            if gate == "relaxed" and (la, lb) in (
+                ("phase1_1000ep", "phase2_1000ep"),
+                ("phase1_1000ep", "phase3_1000ep"),
+                ("phase2_1000ep", "phase3_1000ep"),
+            ):
+                diff_tables.append((f"{la} vs {lb}（{gate}）", diff))
 
     write_markdown(
+        out_dir / "GATE_ANALYSIS_ZH.md",
+        crit=crit,
+        pass_matrix=pass_matrix,
+        reason_summary=reason_summary,
+        strict_by_z=strict_by_z,
+        diff_sections=diff_sections,
+        diff_tables=diff_tables,
+        phases_present=phase_labels,
+    )
+    # English alias for backward compat
+    write_markdown(
         out_dir / "GATE_ANALYSIS.md",
-        crit,
-        reason_summary,
-        diff_relaxed,
-        diff_strict,
+        crit=crit,
+        pass_matrix=pass_matrix,
+        reason_summary=reason_summary,
+        strict_by_z=strict_by_z,
+        diff_sections=diff_sections,
+        diff_tables=diff_tables,
+        phases_present=phase_labels,
     )
 
+    # Legacy filenames (phase1 vs phase2 only)
+    if "phase1_1000ep" in phases and "phase2_1000ep" in phases:
+        build_diff(phases["phase1_1000ep"], phases["phase2_1000ep"], "relaxed",
+                   label_a="phase1_1000ep", label_b="phase2_1000ep").to_csv(
+            out_dir / "phase1_vs_phase2_relaxed.csv", index=False
+        )
+        build_diff(phases["phase1_1000ep"], phases["phase2_1000ep"], "strict",
+                   label_a="phase1_1000ep", label_b="phase2_1000ep").to_csv(
+            out_dir / "phase1_vs_phase2_strict.csv", index=False
+        )
+
     print(f"Wrote analysis to {out_dir}/")
-    print("\n=== 分项失败统计 ===")
-    print(crit.to_string(index=False))
-    print("\n=== Phase2 放宽 Gate 通过 ===")
-    p2r = det[(det["phase"] == "phase2_1000ep") & (det["gate"] == "relaxed") & (det["verdict"] == "PASS")]
-    print(p2r[["Z", "element", "n", "cos", "pde", "dE_meV"]].to_string(index=False))
-    print("\n=== FAIL→PASS (relaxed) ===")
-    print(diff_relaxed[diff_relaxed["status"] == "FAIL→PASS ✓"][["Z", "n", "element_p1", "cos_delta", "pde_delta", "dE_delta_meV"]].to_string(index=False))
+    print("\n=== 三阶段 Gate 通过数 ===")
+    print(pass_matrix.to_string(index=False))
+    if "phase3_1000ep" in phases:
+        p3 = phases["phase3_1000ep"]
+        th = GATES["relaxed"]
+        fail = p3[(p3.cos < th["cos"]) | (p3.pde > th["pde"]) | (p3.dE_meV > th["e_meV"])]
+        if len(fail):
+            print("\n=== Phase3 relaxed FAIL ===")
+            print(fail[["Z", "element", "n", "cos", "pde", "dE_meV"]].to_string(index=False))
 
 
 if __name__ == "__main__":
