@@ -31,6 +31,8 @@ class PinnArtModel(nn.Module):
     ci_enabled: bool = False
     eps_degen_ev: float = 1e-6
     apply_lowdin: bool = False  # Stage A：保持网络原始输出（让 norm/ortho loss 真正起作用）
+    use_hydrogenic_skeleton: bool = True
+    perturb_eps: float = 0.2
 
     @nn.compact
     def __call__(
@@ -56,6 +58,8 @@ class PinnArtModel(nn.Module):
             omega_0=self.omega_0,
             n_orb_max=self.n_orb_max,
             d_in_branch=d_in,
+            use_hydrogenic_skeleton=self.use_hydrogenic_skeleton,
+            perturb_eps=self.perturb_eps,
         )
         kappa = batch["kappa"][:, : self.n_orb_max]
         orb_mask = batch["orb_mask"][:, : self.n_orb_max]
@@ -64,10 +68,15 @@ class PinnArtModel(nn.Module):
         shell_table = batch.get("shell_table")
         if shell_table is not None:
             n_principal = shell_table[:, : self.n_orb_max, 0]
+            l_orbital = shell_table[:, : self.n_orb_max, 1]
         else:
             n_principal = jnp.maximum(jnp.abs(kappa), 1)
+            l_orbital = jnp.where(kappa < 0, -kappa - 1, kappa)
 
-        raw = net(branch_feat, t, r, dt_dr, kappa, orb_mask, Z, n_principal=n_principal)
+        raw = net(
+            branch_feat, t, r, dt_dr, kappa, orb_mask, Z,
+            n_principal=n_principal, l_orbital=l_orbital,
+        )
 
         if self.apply_lowdin:
             ortho = lowdin_orthonormalize(
@@ -142,6 +151,8 @@ def build_model_and_params(cfg, grid: RadialGrid, key: jax.Array):
         ci_enabled=bool(getattr(ci_cfg, "enabled", False)) if ci_cfg else False,
         eps_degen_ev=float(getattr(ci_cfg, "eps_degen_ev", 1e-6)) if ci_cfg else 1e-6,
         apply_lowdin=bool(getattr(model_cfg, "apply_lowdin", False)),
+        use_hydrogenic_skeleton=bool(getattr(model_cfg, "use_hydrogenic_skeleton", True)),
+        perturb_eps=float(getattr(model_cfg, "perturb_eps", 0.2)),
     )
     batch = _dummy_batch(int(getattr(model_cfg, "n_orb_max", 16)), int(getattr(model_cfg, "n_csf_max", 32)))
     params = model.init(key, batch, grid, train=False, return_ci=model.ci_enabled)

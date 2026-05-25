@@ -1,20 +1,20 @@
 """DeepONet: branch (discrete config) + SIREN trunk (continuous t).
 
-Phase-1 ansatz for radial Dirac wavefunctions on hydrogen-like ions:
+Phase-3 ansatz — analytic hydrogenic skeleton + small SIREN perturbation:
 
-    P_a(r) = env(r; |kappa|, Z, n) * shape_a(t, branch)
+    P_a(r) = P_H_{n_a, l_a}(r; Z) * (1 + eps * shape_a(r, branch, kappa, n, l))
     Q_a(r) = c (dP/dr + (kappa/r) P) / (2 c^2 - V)         <-- kinetic balance
     dQ_a   = d Q_a / dr  (autodiff via jnp.gradient)
 
-where:
-    env(r; |kappa|, Z, n) = r^{|kappa|} * exp(-Z r / n)
-    shape(t)              = 1 + tanh(SIREN(t,branch,kappa))   # init to 1, range (0,2)
-                          # but final Dense is zero/ones → shape_init = 1
+where P_H is the JAX-native normalized hydrogenic radial function
+(`hydrogenic_P_jax`); it already carries the correct n−l−1 interior nodes,
+exponential tail exp(−Zr/n), and short-range r^{l+1} behavior.  The SIREN
+"shape" head is initialized to 0 (final Dense kernel/bias = 0) so the model
+starts at P_a = P_H, then learns at most an `eps`-bounded multiplicative
+perturbation (default 0.2) to capture multi-electron screening/correlation.
 
-The shape function is a free SIREN output so it can develop interior nodes
-required for excited states (2s, 3s, …).  The envelope handles short-range
-power law and long-range exponential decay; the SIREN can multiply by an
-arbitrary polynomial-like factor.
+Setting `use_hydrogenic_skeleton=False` reverts to the Phase-1/2 envelope-only
+ansatz (kept for backward compat with old checkpoints).
 """
 
 from __future__ import annotations
@@ -23,6 +23,7 @@ import jax.numpy as jnp
 from flax import linen as nn
 
 from ..constants import C_LIGHT
+from ..physics.hydrogenic import hydrogenic_P_jax, hydrogenic_dP_dr_jax
 from .siren import SirenDense
 
 
@@ -33,6 +34,8 @@ class DeepONetDirac(nn.Module):
     omega_0: float = 30.0
     n_orb_max: int = 16
     d_in_branch: int = 84
+    use_hydrogenic_skeleton: bool = True
+    perturb_eps: float = 0.2
 
     @nn.compact
     def __call__(
@@ -45,6 +48,7 @@ class DeepONetDirac(nn.Module):
         orb_mask: jnp.ndarray,
         Z: jnp.ndarray,
         n_principal: jnp.ndarray | None = None,
+        l_orbital: jnp.ndarray | None = None,
     ) -> dict[str, jnp.ndarray]:
         B = branch_feat.shape[0]
         N_g = t_grid.shape[0]
@@ -72,8 +76,27 @@ class DeepONetDirac(nn.Module):
 
         if n_principal is None:
             n_principal = jnp.maximum(jnp.abs(kappa), 1).astype(jnp.float32)
-        else:
-            n_principal = jnp.maximum(n_principal.astype(jnp.float32), 1.0)
+        # l from kappa if not provided:  l = |kappa+1/2| - 1/2  ⇒  for κ<0  l=-κ-1, κ>0 l=κ
+        if l_orbital is None:
+            l_orbital = jnp.where(kappa < 0, -kappa - 1, kappa).astype(jnp.int32)
+
+        # Analytic hydrogenic skeleton (and its derivative) once for all orbitals.
+        if self.use_hydrogenic_skeleton:
+            P_H = hydrogenic_P_jax(
+                r_grid,
+                Z,
+                jnp.maximum(n_principal.astype(jnp.int32), 1),
+                l_orbital.astype(jnp.int32),
+            )  # [B, N_orb, N_g]
+            dP_H = hydrogenic_dP_dr_jax(
+                r_grid,
+                Z,
+                jnp.maximum(n_principal.astype(jnp.int32), 1),
+                l_orbital.astype(jnp.int32),
+            )
+
+        n_principal = jnp.maximum(n_principal.astype(jnp.float32), 1.0)
+        l_orbital_f = l_orbital.astype(jnp.float32)
 
         P_orbs = []
         Q_orbs = []
@@ -82,24 +105,36 @@ class DeepONetDirac(nn.Module):
         for a in range(N_orb):
             kap_a = kappa[:, a].astype(jnp.float32)
             n_a = n_principal[:, a]
+            l_a = l_orbital_f[:, a]
             kap_feat = jnp.broadcast_to((kap_a / 4.0)[:, None, None], (B, N_g, 1))
             n_feat = jnp.broadcast_to((n_a / 10.0)[:, None, None], (B, N_g, 1))
-            orb_in = jnp.concatenate([trunk_in, kap_feat, n_feat], axis=-1)
+            l_feat = jnp.broadcast_to((l_a / 4.0)[:, None, None], (B, N_g, 1))
+            orb_in = jnp.concatenate([trunk_in, kap_feat, n_feat, l_feat], axis=-1)
 
+            # Initial perturbation MUST be zero so P_a = P_H at init.
             shape = _siren_to_scalar(
                 orb_in,
                 d_trunk=self.d_trunk,
                 n_layers=self.n_siren_layers,
                 omega_0=self.omega_0,
-                final_bias=1.0,
+                final_bias=0.0,
                 name_prefix=f"shape_{a}",
             )
 
-            env, denv = _envelope_with_derivative(r_grid, Z, kap_a, n_a)
-
-            P_a = env * shape
-            dshape_dr = jnp.gradient(shape, r_grid, axis=-1)
-            dP_a = denv * shape + env * dshape_dr
+            if self.use_hydrogenic_skeleton:
+                P_H_a = P_H[:, a, :]
+                dP_H_a = dP_H[:, a, :]
+                pert = 1.0 + self.perturb_eps * jnp.tanh(shape)
+                dpert_dr = self.perturb_eps * (1.0 - jnp.tanh(shape) ** 2) * jnp.gradient(
+                    shape, r_grid, axis=-1
+                )
+                P_a = P_H_a * pert
+                dP_a = dP_H_a * pert + P_H_a * dpert_dr
+            else:
+                env, denv = _envelope_with_derivative(r_grid, Z, kap_a, n_a)
+                P_a = env * (1.0 + shape)
+                dshape_dr = jnp.gradient(shape, r_grid, axis=-1)
+                dP_a = denv * (1.0 + shape) + env * dshape_dr
 
             Q_a = _kinetic_balance_q(P_a, dP_a, V, kap_a, r_grid)
             dQ_a = jnp.gradient(Q_a, r_grid, axis=-1)

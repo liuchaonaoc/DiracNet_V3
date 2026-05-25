@@ -1,0 +1,84 @@
+# Stage A — Phase 3: Laguerre analytic skeleton + small SIREN perturbation
+#
+# Ansatz change (deeponet.py):
+#   P_a(r) = P_H_{n_a, l_a}(r; Z) * (1 + eps * tanh(SIREN(r, branch, n, l, kappa)))
+#                                          ^ init=0  → at t=0 the model = analytic hydrogenic
+#
+# This makes init satisfy cos≈1 and E ≈ -Z²/(2n²) (tested), so SIREN only learns
+# multi-electron screening/correlation perturbations.  Because the architecture
+# changed, this config does NOT resume from any Phase 1/2 checkpoint — it trains
+# from scratch.  Total wall-clock ~6 min on a single GPU.
+
+seed: 42
+
+grid:
+  r_min: 1.0e-4
+  r_max: 50.0
+  n_grid: 256
+  scheme: loglinear
+
+coords:
+  c1: 1.0
+  c2: 1.0
+
+model:
+  n_orb_max: 16
+  n_csf_max: 8
+  d_branch: 128
+  d_trunk: 128
+  n_siren_layers: 4
+  omega_0: 20.0
+  apply_lowdin: false
+  use_hydrogenic_skeleton: true   # Phase-3 ansatz
+  perturb_eps: 0.2                # bound on (1 ± 0.2·tanh) multiplicative perturbation
+
+ci:
+  enabled: false
+
+stage_a:
+  n_epochs: 1000
+  batch_size: 8
+  weights:
+    pde: 5.0          # ← Phase 2 main bottleneck was pde; boost it 5x
+    ortho: 50.0       # ← skeleton is already orthogonal-ish; reduce ortho weight
+    asym: 0.05        # ← analytic tail already correct; keep a small consistency term
+    norm: 5.0         # ← skeleton is already normalized
+    v_prior: 5.0
+    v_smooth: 1.0e-6
+  # Gate 命名与 Phase 2 兼容：
+  #   --gate-mode default/relaxed → stage_a.gate
+  #   --gate-mode mid             → stage_a.gate_mid
+  #   --gate-mode strict          → stage_a.gate_strict
+  gate:
+    cos_threshold: 0.95
+    pde_threshold: 1.0
+    e_orb_meV_threshold: 50.0
+  gate_mid:
+    cos_threshold: 0.98
+    pde_threshold: 0.5
+    e_orb_meV_threshold: 50.0
+  gate_strict:
+    cos_threshold: 0.99
+    pde_threshold: 1.0e-2
+    e_orb_meV_threshold: 50.0
+
+optimizer:
+  lr_trunk: 2.0e-4    # 比 Phase 2 略高，但 init 已经很好，主要是微调 V_corr 和 shape
+  lr_branch: 1.0e-4
+  weight_decay: 1.0e-4
+  grad_clip: 1.0
+
+training:
+  ckpt_dir: ./checkpoints/v3_phase1_stage_a_z1_8_phase3
+  log_dir: ./logs/v3_phase1_stage_a_z1_8_phase3
+  steps_per_epoch: 12
+  val_every_epochs: 25
+  ckpt_every_epochs: 100
+  shuffle_each_epoch: true
+  # 不 resume：Laguerre 骨架是新结构，老 ckpt 不兼容
+  resume_from: null
+
+dataset:
+  manifest: data_cache/manifest_hydrogenic_z1_8.parquet
+  n_orb_max: 16
+  n_csf_max: 8
