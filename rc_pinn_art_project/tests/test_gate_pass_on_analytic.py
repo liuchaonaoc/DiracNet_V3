@@ -34,4 +34,9 @@ def test_gate_pass_on_analytic_h1s(h1s_batch, r_grid):
     )
     assert rep.cos_min >= 0.95
     e_ref = hydrogenic_energy(1, 1)
-    assert abs(float(out["E_orb"][0, 0]) - e_ref) * 27.211 < 500.0
+    from pinn_art.constants import hartree_to_meV
+
+    d_meV = float(hartree_to_meV(abs(float(out["E_orb"][0, 0]) - e_ref)))
+    assert abs(rep.e_orb_mae_meV - d_meV) < 1e-3
+    # 旧实现误用 eV 标成 meV（约小 1000×）；修正后同量纲应 > 1 keV 量级
+    assert rep.e_orb_mae_meV > 500.0

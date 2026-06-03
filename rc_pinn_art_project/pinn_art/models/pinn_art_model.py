@@ -7,8 +7,9 @@ import jax.numpy as jnp
 from flax import linen as nn
 
 from ..ci.eigen_solver import safe_eigh
-from ..ci.hamiltonian import assemble_hamiltonian_diagonal
+from ..ci.hamiltonian import assemble_hamiltonian, assemble_hamiltonian_diagonal
 from ..ci.nist_inject import fill_h_diagonal_hybrid
+from ..ci.slater_radial import compute_all_Rk_diagonal
 from ..coords.mixed_map import MixedRadialMap
 from ..coords.shell_features import branch_input_dim, build_branch_features
 from ..nets.deeponet import DeepONetDirac
@@ -29,6 +30,8 @@ class PinnArtModel(nn.Module):
     c1: float = 1.0
     c2: float = 1.0
     ci_enabled: bool = False
+    k_list: tuple[int, ...] = (0,)
+    nist_inject: bool = False
     eps_degen_ev: float = 1e-6
     apply_lowdin: bool = False  # Stage A：保持网络原始输出（让 norm/ortho loss 真正起作用）
     use_hydrogenic_skeleton: bool = True
@@ -114,10 +117,24 @@ class PinnArtModel(nn.Module):
             else:
                 csf_mask = csf_mask[:, : self.n_csf_max]
 
-            H = assemble_hamiltonian_diagonal(E_orb, csf_mask)
+            slater_log_scale = self.param(
+                "slater_log_scale",
+                nn.initializers.zeros,
+                (len(self.k_list),),
+            )
+            Rk = compute_all_Rk_diagonal(P, Q, orb_mask, grid, k_list=self.k_list)
+            Rk = Rk * jnp.exp(slater_log_scale)[None, :, None]
+
+            C_ang = batch.get("C_ang")
+            if C_ang is not None:
+                C_ang = C_ang[:, : len(self.k_list), : self.n_csf_max, : self.n_csf_max]
+                H = assemble_hamiltonian(E_orb, Rk, C_ang, csf_mask)
+            else:
+                H = assemble_hamiltonian_diagonal(E_orb, csf_mask)
+
             E_nist = batch.get("E_nist")
             nist_mask = batch.get("nist_mask")
-            if E_nist is not None and nist_mask is not None:
+            if self.nist_inject and E_nist is not None and nist_mask is not None:
                 E_nist = E_nist[:, : self.n_csf_max]
                 nist_mask = nist_mask[:, : self.n_csf_max]
                 if E_nist.dtype == jnp.float32 or E_nist.dtype == jnp.float64:
@@ -128,11 +145,22 @@ class PinnArtModel(nn.Module):
             out["E_csf"] = E_csf
             out["V_csf"] = V_csf
             out["H"] = H
+            out["Rk"] = Rk
             out["transitions"] = compute_e1_transitions(E_csf, V_csf, P, Q, grid, csf_mask)
             if E_grid is not None:
                 out["cross_sections"] = {"CE": collision_cross_section_ce(E_csf, E_grid)}
 
         return out
+
+
+def _resolve_eps_degen_ev(ci_cfg) -> float:
+    """Regularization for eigh: config in meV (preferred) or legacy eV → internal eV."""
+    if ci_cfg is None:
+        return 1e-6
+    mev = getattr(ci_cfg, "eps_degen_meV", None)
+    if mev is not None:
+        return float(mev) / 1000.0
+    return float(getattr(ci_cfg, "eps_degen_ev", 1e-6))
 
 
 def build_model_and_params(cfg, grid: RadialGrid, key: jax.Array):
@@ -149,7 +177,9 @@ def build_model_and_params(cfg, grid: RadialGrid, key: jax.Array):
         c1=float(getattr(coords, "c1", 1.0)) if coords else 1.0,
         c2=float(getattr(coords, "c2", 1.0)) if coords else 1.0,
         ci_enabled=bool(getattr(ci_cfg, "enabled", False)) if ci_cfg else False,
-        eps_degen_ev=float(getattr(ci_cfg, "eps_degen_ev", 1e-6)) if ci_cfg else 1e-6,
+        k_list=tuple(int(k) for k in getattr(ci_cfg, "k_list", [0])) if ci_cfg else (0,),
+        nist_inject=bool(getattr(ci_cfg, "nist_inject", False)) if ci_cfg else False,
+        eps_degen_ev=_resolve_eps_degen_ev(ci_cfg),
         apply_lowdin=bool(getattr(model_cfg, "apply_lowdin", False)),
         use_hydrogenic_skeleton=bool(getattr(model_cfg, "use_hydrogenic_skeleton", True)),
         perturb_eps=float(getattr(model_cfg, "perturb_eps", 0.2)),

@@ -1,0 +1,67 @@
+# Stage B — CI radial calibration (freeze Stage A DeepONet, train slater_log_scale)
+#
+# Prerequisites:
+#   - Stage A checkpoint: checkpoints/v3_phase1_stage_a_z1_8_phase3/stage_a_last.msgpack
+#   - Racah cache: data_cache/racah_cache_z1_8.npz
+
+seed: 42
+
+grid:
+  r_min: 1.0e-2
+  r_max: 50.0
+  n_grid: 256
+  scheme: loglinear
+
+coords:
+  c1: 1.0
+  c2: 1.0
+
+model:
+  n_orb_max: 16
+  n_csf_max: 8
+  d_branch: 128
+  d_trunk: 128
+  n_siren_layers: 4
+  omega_0: 20.0
+  apply_lowdin: true
+  use_hydrogenic_skeleton: true
+  perturb_eps: 0.2
+
+ci:
+  enabled: true
+  nist_inject: false   # Stage B 不用 NIST 对角注入（类氢 manifest 无实验能级）
+  k_list: [0, 1, 2]
+  M_max: 8
+  eps_degen_meV: 1.0e-3   # 正则化对角项（= 1e-6 eV）；内部仍换算为 Hartree
+  racah_cache: data_cache/racah_cache_z1_8.npz
+
+stage_b:
+  n_epochs: 200
+  batch_size: 8
+  lr: 5.0e-3
+  weights:
+    slat: 10.0
+    offdiag: 1.0
+    e_csf: 50.0
+    pde: 0.05
+  gate:
+    synthetic_meV_threshold: 10.0
+    manifest_dE_meV_threshold: 50.0
+
+optimizer:
+  weight_decay: 0.0
+  grad_clip: 1.0
+
+training:
+  ckpt_dir: ./checkpoints/v3_phase1_stage_b_z1_8
+  log_dir: ./logs/v3_phase1_stage_b_z1_8
+  steps_per_epoch: 12
+  val_every_epochs: 20
+  ckpt_every_epochs: 50
+  shuffle_each_epoch: true
+  resume_from: checkpoints/v3_phase1_stage_a_z1_8_phase3/stage_a_last.msgpack
+
+dataset:
+  manifest: data_cache/manifest_hydrogenic_z1_8.parquet
+  n_orb_max: 16
+  n_csf_max: 8

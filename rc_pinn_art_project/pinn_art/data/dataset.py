@@ -7,6 +7,7 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
+from ..constants import ev_to_meV, meV_to_hartree
 from .config_parser import encode_config_to_array, parse_config_string
 
 
@@ -59,10 +60,15 @@ class ManifestDataset:
                 omegas.append(0.0)
                 orb_mask.append(False)
 
-        level_eV = float(row.get("level_eV", np.nan))
-        has_nist = bool(row.get("has_nist_level", np.isfinite(level_eV)))
-        if np.isfinite(level_eV):
-            E_ha = level_eV / 27.211386245988
+        # Parquet: prefer level_meV; legacy level_eV (NIST ASD) converted at load
+        if "level_meV" in row and np.isfinite(row.get("level_meV", np.nan)):
+            level_meV = float(row["level_meV"])
+        else:
+            level_eV = float(row.get("level_eV", np.nan))
+            level_meV = float(ev_to_meV(level_eV)) if np.isfinite(level_eV) else np.nan
+        has_nist = bool(row.get("has_nist_level", np.isfinite(level_meV)))
+        if np.isfinite(level_meV):
+            E_ha = float(meV_to_hartree(level_meV))
         else:
             E_ha = np.nan
 
@@ -78,6 +84,7 @@ class ManifestDataset:
             "orb_mask": np.array(orb_mask, dtype=bool),
             "J": float(row.get("J", 0.5)),
             "parity": int(row.get("parity", 0)),
-            "E_nist_scalar": E_ha,
+            "level_meV": level_meV,
+            "E_nist_scalar": E_ha,  # Hartree — for CI Hamiltonian inject only
             "nist_mask_scalar": has_nist,
         }

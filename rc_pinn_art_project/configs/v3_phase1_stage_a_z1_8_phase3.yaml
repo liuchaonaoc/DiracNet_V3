@@ -12,7 +12,7 @@
 seed: 42
 
 grid:
-  r_min: 1.0e-4
+  r_min: 1.0e-2
   r_max: 50.0
   n_grid: 256
   scheme: loglinear

@@ -16,3 +16,16 @@ def stage_a_weights(cfg) -> dict[str, float]:
         "v_prior": float(getattr(weights, "v_prior", 0.1)),
         "v_smooth": float(getattr(weights, "v_smooth", 1e-3)),
     }
+
+
+def stage_b_weights(cfg) -> dict[str, float]:
+    w = getattr(cfg, "stage_b", None)
+    if w is None:
+        return {"slat": 1.0, "offdiag": 0.1, "e_csf": 10.0, "pde": 0.01}
+    weights = getattr(w, "weights", w)
+    return {
+        "slat": float(getattr(weights, "slat", 1.0)),
+        "offdiag": float(getattr(weights, "offdiag", 0.1)),
+        "e_csf": float(getattr(weights, "e_csf", 10.0)),
+        "pde": float(getattr(weights, "pde", 0.01)),
+    }

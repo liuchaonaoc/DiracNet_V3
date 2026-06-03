@@ -8,7 +8,7 @@ from dataclasses import dataclass
 import jax.numpy as jnp
 import numpy as np
 
-from ..constants import HARTREE_TO_EV
+from ..constants import hartree_to_meV
 from ..physics.hydrogenic import cosine_signed, hydrogenic_energy, hydrogenic_P_analytic
 from ..utils.grid import RadialGrid
 
@@ -133,7 +133,7 @@ def check_gate_a(
             cos_vals.append(abs(c))
             e_ref = hydrogenic_energy(Z, n_b)
             e_pred = float(np.asarray(out["E_orb"][b, a]))
-            e_mae_vals.append(abs(e_pred - e_ref) * HARTREE_TO_EV)
+            e_mae_vals.append(float(hartree_to_meV(abs(e_pred - e_ref))))
 
     cos_min = min(cos_vals) if cos_vals else 0.0
     e_orb_mae_meV = max(e_mae_vals) if e_mae_vals else float("inf")

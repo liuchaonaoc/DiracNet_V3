@@ -14,7 +14,7 @@ sys.path.insert(0, str(ROOT))
 import jax
 import jax.numpy as jnp
 
-from pinn_art.constants import HARTREE_TO_EV
+from pinn_art.constants import hartree_to_meV
 from pinn_art.data.collate import collate_batches
 from pinn_art.data.dataset import ManifestDataset
 from pinn_art.models.pinn_art_model import build_model_and_params
@@ -45,7 +45,11 @@ def main():
         if bool(mask[0]):
             n_nist += 1
             if out["E_csf"] is not None:
-                err = abs(float(out["E_csf"][0, 0] - batch["E_nist"][0, 0])) * HARTREE_TO_EV
+                err = float(
+                    hartree_to_meV(
+                        abs(float(out["E_csf"][0, 0] - batch["E_nist"][0, 0]))
+                    )
+                )
                 mae_list.append(err)
         else:
             n_fallback += 1

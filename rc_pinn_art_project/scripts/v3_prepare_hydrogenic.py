@@ -8,7 +8,7 @@ from pathlib import Path
 
 import pandas as pd
 
-from pinn_art.constants import HARTREE_TO_EV
+from pinn_art.constants import hartree_to_meV
 from pinn_art.ci.racah_compute import parent_config_hash
 
 
@@ -20,7 +20,8 @@ def build_hydrogenic_manifest(
     """
     类氢离子：核电荷 Z、仅 1 个电子（ion_charge = Z-1, nele = 1）。
 
-    每行对应不同主量子数 n；level_eV 为相对该 Z 的 1s 基态激发能（eV）。
+    每行对应不同主量子数 n；level_meV 为相对该 Z 的 1s 基态激发能（meV）。
+    保留 level_eV = level_meV/1000 供旧脚本兼容。
     parent_config / level_config 均为 ``{n}s1``（Phase-1 语义，见 prompts/09）。
     """
     rows = []
@@ -30,7 +31,8 @@ def build_hydrogenic_manifest(
         E_1_ha = -(float(Z) ** 2) / 2.0
         for n in range(1, n_levels + 1):
             E_n_ha = -(float(Z) ** 2) / (2.0 * float(n) ** 2)
-            level_eV = 0.0 if n == 1 else (E_n_ha - E_1_ha) * HARTREE_TO_EV
+            level_meV = 0.0 if n == 1 else float(hartree_to_meV(E_n_ha - E_1_ha))
+            level_eV = level_meV / 1000.0
             cfg = f"{n}s1"
             parent = "1s1"
             rows.append(
@@ -43,6 +45,7 @@ def build_hydrogenic_manifest(
                     "J": 0.5,
                     "parity": 0,
                     "term": "2S",
+                    "level_meV": float(level_meV),
                     "level_eV": float(level_eV),
                     "has_nist_level": True,
                     "parent_config_id": int(parent_config_hash(parent)),
