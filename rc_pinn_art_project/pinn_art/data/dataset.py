@@ -67,10 +67,16 @@ class ManifestDataset:
             level_eV = float(row.get("level_eV", np.nan))
             level_meV = float(ev_to_meV(level_eV)) if np.isfinite(level_eV) else np.nan
         has_nist = bool(row.get("has_nist_level", np.isfinite(level_meV)))
-        if np.isfinite(level_meV):
+        # Stage C inject: absolute energy on E_orb scale (level_abs_meV)
+        if "level_abs_meV" in row and np.isfinite(row.get("level_abs_meV", np.nan)):
+            E_ha = float(meV_to_hartree(float(row["level_abs_meV"])))
+        elif np.isfinite(level_meV):
             E_ha = float(meV_to_hartree(level_meV))
         else:
             E_ha = np.nan
+
+        csf_slot = int(row.get("csf_slot", 0))
+        spectrum_id = str(row.get("spectrum_id", ""))
 
         return {
             "Z": Z,
@@ -78,6 +84,8 @@ class ManifestDataset:
             "nele": nele,
             "parent_config": parent,
             "level_config": level,
+            "csf_slot": csf_slot,
+            "spectrum_id": spectrum_id,
             "shell_table": shell_table,
             "kappa": np.array(kappas, dtype=np.int32),
             "omega": np.array(omegas, dtype=np.float32),

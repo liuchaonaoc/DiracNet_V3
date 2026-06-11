@@ -8,9 +8,13 @@ Stage A (Dirac PINN)  →  gate_A  →  Stage B (CI radial, 可选)  →  gate_B
 
 | 阶段 | 可训练参数 | 数据 |
 |------|------------|------|
-| A | DeepONet branch+trunk, $\Delta V$ | manifest_hydrogenic + 少量 Z=3..10 |
+| A（Round 1） | DeepONet branch+trunk, $\Delta V$ | manifest_hydrogenic（Z=1..8, `ns1`） |
+| A（Round 2） | DeepONet branch+trunk, $V$ 头（自洽 DFS） | `manifest_nist_z1_26_n10`（Z=1..26, n≤10, 基态+单激发，见 `16`） |
 | B | 仅 Slater 校正头（若有） | 同 A + 小 manifest_ci |
 | C | **无训练** 或 极弱 leading% | 全量推断：`nist_mask` 处 NIST，否则理论 Fall-back |
+
+> **Round 2（`16_stage_a_selfconsistent_dfs.md`）**：Stage A 升级为自洽 Dirac-Fock-Slater 屏蔽势求解器，
+> 总损失加 `w_scf·L_scf`（见 `06` §1），覆盖 Z≤26 / n≤10 全组态。NIST 仍不进 backward。
 
 ## 2. 优化器
 
@@ -89,7 +93,12 @@ training:
 
 stage_a:
   enabled: true
-  manifest: data_cache/manifest_hydrogenic_v3.parquet
+  manifest: data_cache/manifest_nist_z1_26_n10.parquet   # Round 2（Round 1 用 manifest_hydrogenic）
+  weights:
+    scf: 1.0            # Round 2：DFS 自洽一致性
+dfs:
+  alpha_x: 1.0          # Slater Xα 交换系数
+  latter_tail: true     # 离子尾部修正 → -(Z-N+1)/r
 
 stage_b:
   enabled: false

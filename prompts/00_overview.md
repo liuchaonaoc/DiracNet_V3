@@ -27,7 +27,7 @@
 
 训练分阶段（见 `07_training_pipeline.md`）：
 
-1. **Stage A**：只优化 Dirac PDE + 正交 + 渐近；**NIST 不进 backward**。
+1. **Stage A**：优化 Dirac PDE + 正交 + 渐近 + **自洽 DFS 屏蔽势一致性**（Round 2，见 `16_stage_a_selfconsistent_dfs.md`）；**NIST 不进 backward**。屏蔽势必须来自物理（Dirac-Fock-Slater 局域中心势），不得拟合实验能级。
 2. **Stage B**：冻结 trunk/branch 主体，只训 CI 径向积分头或低秩修正（若有）。
 3. **Stage C**：对角元 **混合填充**——`nist_mask=True` 时用 NIST 实验能级硬替换 $H_{ii}$；`nist_mask=False` 时 **Fall-back** 到 PINN/CI 理论对角元 $H_{ii}^{\mathrm{theory}}$（极高激发态、极高电荷态等 NIST 未收录情形）。不对角元做 lookup bias。
 
@@ -94,11 +94,17 @@ vmap_over_E = jax.vmap(partial(cross_section, params), in_axes=(None, 0))
 
 PyTorch 仅用于 **数据预处理脚本**（复用 V2 `nist_loader`）可接受；**训练与推断核心必须在 JAX**。
 
-## 5. 不在 V3 第一版范围
+## 5. 范围
 
-- 全组态相互作用（完整 MRCI）
+**Round 2 入范围**（见 `16_stage_a_selfconsistent_dfs.md`）：
+
+- **$Z\le 26$、$n\le 10$ 的基态 + 单电子激发组态**，Stage A 自洽 DFS 全组态预训练。
+
+**仍不在范围**：
+
+- 全组态相互作用（完整 MRCI）、双激发以上 CI
 - Breit / QED 完整修正
-- $Z > 26$ 或 $n > 15$ 的生产数据
+- $Z > 26$ 或 $n > 10$ 的生产数据
 - 分子 / 晶体
 - 分布式多 GPU 训练（单卡 `jit` 优先）
 

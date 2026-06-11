@@ -1,0 +1,101 @@
+# Stage B — CI Slater calibration (Z = 1..26)
+#
+# Based on Stage A v3_stage_a_z1_26_n10.yaml (scf=density, Z<=26).
+# Stage A checkpoint: checkpoints/v3_stage_a_z1_26_n10_p1z3_4_eprime_full/best_anchor.msgpack
+# Hydrogenic manifest: data_cache/manifest_hydrogenic_z1_26_n10.parquet
+# Racah cache:         data_cache/racah_cache_z1_26_n10.npz
+#
+# Stage B freezes the Stage A DeepONet (branch/trunk/V) and only trains
+# slater_log_scale (3 parameters for k_list=[0,1,2]) on the class-H manifest.
+# nist_inject: false — class-H has no experimental levels.
+#
+# Goal: fix the l=0 Z=3-4 bottleneck via Slater-scale recalibration.
+# Date: 2026-06-09
+
+seed: 42
+
+grid:
+  r_min: 1.0e-2
+  r_max: 50.0
+  n_grid: 256
+  scheme: loglinear
+
+coords:
+  c1: 1.0
+  c2: 1.0
+
+model:
+  n_orb_max: 16
+  n_csf_max: 8
+  d_branch: 128
+  d_trunk: 128
+  n_siren_layers: 4
+  omega_0: 20.0
+  apply_lowdin: true       # Stage B: try Lowdin (note: actual impl is normalize-only)
+  use_hydrogenic_skeleton: true
+  perturb_eps: 0.2
+  use_zeff_warmstart: true
+
+ci:
+  enabled: true
+  nist_inject: false       # Stage B 不用 NIST（class-H manifest 无实验能级）
+  k_list: [0, 1, 2]
+  M_max: 8
+  eps_degen_meV: 1.0e-3
+  racah_cache: data_cache/racah_cache_z1_26_n10.npz
+
+stage_b:
+  n_epochs: 200
+  batch_size: 16
+  lr: 5.0e-3
+  weights:
+    slat: 10.0
+    offdiag: 1.0
+    e_csf: 50.0
+    pde: 0.05
+  gate:
+    synthetic_meV_threshold: 10.0
+    manifest_dE_meV_threshold: 50.0
+
+optimizer:
+  weight_decay: 0.0
+  grad_clip: 1.0
+
+training:
+  ckpt_dir: ./checkpoints/v3_stage_b_z1_26_n10
+  log_dir: ./logs/v3_stage_b_z1_26_n10
+  steps_per_epoch: 16
+  val_every_epochs: 20
+  ckpt_every_epochs: 50
+  shuffle_each_epoch: true
+  resume_from: checkpoints/v3_stage_a_z1_26_n10_p1z3_4_eprime_full/best_anchor.msgpack
+
+dataset:
+  manifest: data_cache/manifest_hydrogenic_z1_26_n10.parquet
+  n_orb_max: 16
+  n_csf_max: 8
+
+# Stage A still relevant for DFS local potential settings
+dfs:
+  enabled: true
+  alpha_x: 1.0
+  latter_tail: true
+  anchor_vprior: true
+  fermi_amaldi: true
+  scf_weight_mode: density
+
+stage_a:
+  n_epochs: 4000
+  batch_size: 16
+  weights:
+    pde: 1.0
+    ortho: 100.0
+    asym: 0.1
+    norm: 10.0
+    v_prior: 1.0
+    v_smooth: 1.0e-6
+    scf: 5.0
+  gate:
+    cos_threshold: 0.99
+    pde_threshold: 1.0e-2
+    e_orb_meV_threshold: 50.0

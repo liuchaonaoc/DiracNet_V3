@@ -19,6 +19,7 @@ if V1_ROOT.exists():
     sys.path.insert(0, str(V1_ROOT))
 
 from pinn_art.constants import ENERGY_UNIT, ev_to_meV, hartree_to_meV
+from pinn_art.ci.racah_cache import RacahCache
 from pinn_art.data.collate import collate_batches
 from pinn_art.data.dataset import ManifestDataset
 from pinn_art.models.pinn_art_model import build_model_and_params
@@ -77,6 +78,11 @@ def main():
         default="checkpoints/v3_phase1_stage_a_z1_8_phase3/stage_a_last.msgpack",
     )
     ap.add_argument("--out-dir", default=None)
+    ap.add_argument(
+        "--return-ci",
+        action="store_true",
+        help="Also run CI branch (Stage C: E_csf + nist inject)",
+    )
     args = ap.parse_args()
 
     cfg = load_config(ROOT / args.config)
@@ -94,20 +100,38 @@ def main():
     model, _ = build_model_and_params(cfg, grid, jax.random.PRNGKey(0))
     params = load_params(ROOT / args.ckpt)
 
+    use_ci = args.return_ci or bool(getattr(getattr(cfg, "ci", None), "enabled", False))
+    racah_cache = None
+    k_list = ()
+    if use_ci and getattr(cfg, "ci", None):
+        racah_path = ROOT / cfg.ci.racah_cache
+        if racah_path.exists():
+            racah_cache = RacahCache.load(racah_path)
+            k_list = tuple(int(k) for k in cfg.ci.k_list)
+
     mdf = pd.read_parquet(manifest)
     rows = []
     e_pred_1s: dict[int, float] = {}
+    e_csf_1s: dict[int, float] = {}
 
     for i in range(len(ds)):
-        batch = collate_batches([ds[i]], n_csf_max=int(getattr(cfg.model, "n_csf_max", 8)))
-        out = model.apply(params, batch, grid, train=False, return_ci=False)
+        batch = collate_batches(
+            [ds[i]],
+            n_csf_max=int(getattr(cfg.model, "n_csf_max", 8)),
+            racah_cache=racah_cache,
+            k_list=k_list if racah_cache else None,
+        )
+        out = model.apply(params, batch, grid, train=False, return_ci=use_ci)
         Z = int(batch["Z"][0])
         ion = int(batch["ion_charge"][0])
         level_cfg = str(mdf.iloc[i]["level_config"])
         n, l = parse_n_l_from_level_config(level_cfg)
         E_pred_ha = float(out["E_orb"][0, 0])
+        E_csf_ha = float(out["E_csf"][0, 0]) if use_ci and out.get("E_csf") is not None else float("nan")
         if n == 1 and l == 0:
             e_pred_1s[Z] = E_pred_ha
+            if np.isfinite(E_csf_ha):
+                e_csf_1s[Z] = E_csf_ha
 
         rows.append({
             "row": i,
@@ -118,6 +142,7 @@ def main():
             "n": n,
             "l": l,
             "E_pred_meV": float(hartree_to_meV(E_pred_ha)),
+            "E_csf_meV": float(hartree_to_meV(E_csf_ha)) if np.isfinite(E_csf_ha) else np.nan,
         })
 
     df = pd.DataFrame(rows)
@@ -126,6 +151,12 @@ def main():
         lambda r: (r["E_pred_meV"] - e_pred_1s_meV[r["Z"]]) if r["n"] > 1 else 0.0,
         axis=1,
     )
+    if use_ci and e_csf_1s:
+        e_csf_1s_meV = {z: float(hartree_to_meV(ha)) for z, ha in e_csf_1s.items()}
+        df["E_csf_exc_meV"] = df.apply(
+            lambda r: (r["E_csf_meV"] - e_csf_1s_meV[r["Z"]]) if r["n"] > 1 and np.isfinite(r["E_csf_meV"]) else 0.0,
+            axis=1,
+        )
     df["E_hydrogenic_meV"] = df.apply(
         lambda r: float(hartree_to_meV(hydrogenic_energy(int(r["Z"]), int(r["n"])))), axis=1
     )
@@ -177,6 +208,8 @@ def main():
     df["nist_unc_meV"] = nist_unc
     df["err_exc_vs_nist_meV"] = (df["E_pred_exc_meV"] - df["nist_exc_meV"]).abs()
     df["err_exc_vs_nist_minus_manifest_meV"] = (df["nist_exc_meV"] - df["manifest_exc_meV"]).abs()
+    if use_ci and "E_csf_exc_meV" in df.columns:
+        df["err_exc_csf_vs_nist_meV"] = (df["E_csf_exc_meV"] - df["nist_exc_meV"]).abs()
 
     csv_path = out_dir / "energy_vs_nist_comparison.csv"
     df.to_csv(csv_path, index=False, float_format="%.6f")
@@ -187,11 +220,18 @@ def main():
     mae_h = float(df["err_pred_vs_hydrogenic_meV"].mean())
     mae_man = float(df["err_exc_vs_manifest_meV"].mean())
 
+    mae_csf_line = ""
+    if use_ci and "err_exc_csf_vs_nist_meV" in df.columns:
+        mae_csf = float(df.loc[df["nist_matched"] & (df["n"] > 1), "err_exc_csf_vs_nist_meV"].mean())
+        mae_csf_line = f"| 预测 E_csf 激发能 vs NIST（inject 后） | **{mae_csf:.4f}** meV | inject 自检 |"
+
     lines = [
-        "# 预测能量 vs NIST / 参考（Phase 3 @1000 ep）",
+        "# 预测能量 vs NIST / 参考",
         "",
         f"- Checkpoint: `{args.ckpt}`",
-        f"- Manifest: `{manifest.name}`（48 行类氢 `ns1`）",
+        f"- Config: `{args.config}`",
+        f"- CI / return_ci: **{use_ci}**",
+        f"- Manifest: `{manifest.name}`",
         f"- NIST 数据源: `DiracNet_V1/.../data_raw/nist/{{Element}}{{Roman}}.csv`（ASD Levels，读入后转为 **{ENERGY_UNIT}**）",
         f"- 对外能量单位: **{ENERGY_UNIT}**（内部 Dirac/CI 仍为 Hartree）",
         "",
@@ -209,7 +249,11 @@ def main():
         "",
         f"| 对比 | MAE (meV) | 备注 |",
         f"|------|-----------|------|",
-        f"| 预测 vs **真实 NIST** `{n_nist}/48` 行匹配 | **{mae_nist:.2f}** | 主指标 |",
+        f"| 预测 E_orb 激发能 vs **真实 NIST** `{n_nist}/48` 行匹配 | **{mae_nist:.2f}** | 主指标 (layer2_orb) |",
+    ]
+    if mae_csf_line:
+        lines.append(mae_csf_line)
+    lines.extend([
         f"| 预测 vs manifest（类氢） | {mae_man:.2f} | Stage A 训练标签 |",
         f"| 预测绝对能量 vs 类氢解析 | {mae_h:.2f} | 与 Gate dE 一致 |",
         "",
@@ -217,7 +261,7 @@ def main():
         "",
         "| Z | 元素 | 匹配 NIST | MAE vs NIST | MAE vs manifest |",
         "|---|------|-----------|-------------|-----------------|",
-    ]
+    ])
     for Z, g in df.groupby("Z"):
         el = g["element"].iloc[0]
         nm = int(g["nist_matched"].sum())

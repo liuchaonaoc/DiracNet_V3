@@ -86,7 +86,8 @@ def hydrogenic_P_jax(
     return: [B, N_orb, N_g]
     """
     rf = r.astype(jnp.float32)
-    Zf = Z.astype(jnp.float32)[:, None]
+    Zf = Z.astype(jnp.float32)
+    Zf = Zf[:, None] if Zf.ndim == 1 else Zf  # [B,1] (per-atom) or [B,N_orb] (per-orbital z_eff)
     n_f = jnp.maximum(n.astype(jnp.float32), 1.0)
     l_f = jnp.clip(l.astype(jnp.float32), 0.0, n_f - 1.0)
     alpha = 2.0 * l_f + 1.0
@@ -136,7 +137,8 @@ def hydrogenic_dP_dr_jax(
         dL_k^alpha/drho = -L_{k-1}^{alpha+1}(rho)  (Abramowitz/standard identity)
     """
     rf = r.astype(jnp.float32)
-    Zf = Z.astype(jnp.float32)[:, None]
+    Zf = Z.astype(jnp.float32)
+    Zf = Zf[:, None] if Zf.ndim == 1 else Zf  # [B,1] or [B,N_orb]
     n_f = jnp.maximum(n.astype(jnp.float32), 1.0)
     l_f = jnp.clip(l.astype(jnp.float32), 0.0, n_f - 1.0)
     alpha = 2.0 * l_f + 1.0

@@ -15,6 +15,7 @@ from ..coords.shell_features import branch_input_dim, build_branch_features
 from ..nets.deeponet import DeepONetDirac
 from ..observables.collision import collision_cross_section_ce
 from ..observables.transition_rates import compute_e1_transitions
+from ..physics.dfs_potential import slater_effective_charge
 from ..physics.dirac_operator import dirac_apply, orbital_energy_from_dirac
 from ..physics.orthogonalizer import lowdin_orthonormalize
 from ..utils.grid import RadialGrid
@@ -36,6 +37,7 @@ class PinnArtModel(nn.Module):
     apply_lowdin: bool = False  # Stage A：保持网络原始输出（让 norm/ortho loss 真正起作用）
     use_hydrogenic_skeleton: bool = True
     perturb_eps: float = 0.2
+    use_zeff_warmstart: bool = False  # R1.3: Slater Z_eff skeleton warm-start
 
     @nn.compact
     def __call__(
@@ -76,9 +78,17 @@ class PinnArtModel(nn.Module):
             n_principal = jnp.maximum(jnp.abs(kappa), 1)
             l_orbital = jnp.where(kappa < 0, -kappa - 1, kappa)
 
+        z_eff_orb = None
+        if self.use_zeff_warmstart:
+            omega = batch.get("omega")
+            if omega is not None:
+                z_eff_orb = slater_effective_charge(
+                    Z, n_principal, omega[:, : self.n_orb_max], orb_mask
+                )
+
         raw = net(
             branch_feat, t, r, dt_dr, kappa, orb_mask, Z,
-            n_principal=n_principal, l_orbital=l_orbital,
+            n_principal=n_principal, l_orbital=l_orbital, z_eff_orb=z_eff_orb,
         )
 
         if self.apply_lowdin:
@@ -125,12 +135,16 @@ class PinnArtModel(nn.Module):
             Rk = compute_all_Rk_diagonal(P, Q, orb_mask, grid, k_list=self.k_list)
             Rk = Rk * jnp.exp(slater_log_scale)[None, :, None]
 
+            csf_to_orb = batch.get("csf_to_orb")
+            if csf_to_orb is not None:
+                csf_to_orb = csf_to_orb[:, : self.n_csf_max, : self.n_orb_max]
+
             C_ang = batch.get("C_ang")
             if C_ang is not None:
                 C_ang = C_ang[:, : len(self.k_list), : self.n_csf_max, : self.n_csf_max]
-                H = assemble_hamiltonian(E_orb, Rk, C_ang, csf_mask)
+                H = assemble_hamiltonian(E_orb, Rk, C_ang, csf_mask, csf_to_orb)
             else:
-                H = assemble_hamiltonian_diagonal(E_orb, csf_mask)
+                H = assemble_hamiltonian_diagonal(E_orb, csf_mask, csf_to_orb)
 
             E_nist = batch.get("E_nist")
             nist_mask = batch.get("nist_mask")
@@ -183,6 +197,7 @@ def build_model_and_params(cfg, grid: RadialGrid, key: jax.Array):
         apply_lowdin=bool(getattr(model_cfg, "apply_lowdin", False)),
         use_hydrogenic_skeleton=bool(getattr(model_cfg, "use_hydrogenic_skeleton", True)),
         perturb_eps=float(getattr(model_cfg, "perturb_eps", 0.2)),
+        use_zeff_warmstart=bool(getattr(model_cfg, "use_zeff_warmstart", False)),
     )
     batch = _dummy_batch(int(getattr(model_cfg, "n_orb_max", 16)), int(getattr(model_cfg, "n_csf_max", 32)))
     params = model.init(key, batch, grid, train=False, return_ci=model.ci_enabled)

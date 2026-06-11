@@ -49,6 +49,7 @@ class DeepONetDirac(nn.Module):
         Z: jnp.ndarray,
         n_principal: jnp.ndarray | None = None,
         l_orbital: jnp.ndarray | None = None,
+        z_eff_orb: jnp.ndarray | None = None,
     ) -> dict[str, jnp.ndarray]:
         B = branch_feat.shape[0]
         N_g = t_grid.shape[0]
@@ -81,16 +82,19 @@ class DeepONetDirac(nn.Module):
             l_orbital = jnp.where(kappa < 0, -kappa - 1, kappa).astype(jnp.int32)
 
         # Analytic hydrogenic skeleton (and its derivative) once for all orbitals.
+        # Optional Z_eff warm-start (R1.3): per-orbital screened charge stabilizes
+        # the n-l-1 node structure for many-electron (screened) systems.
+        z_skel = Z if z_eff_orb is None else z_eff_orb
         if self.use_hydrogenic_skeleton:
             P_H = hydrogenic_P_jax(
                 r_grid,
-                Z,
+                z_skel,
                 jnp.maximum(n_principal.astype(jnp.int32), 1),
                 l_orbital.astype(jnp.int32),
             )  # [B, N_orb, N_g]
             dP_H = hydrogenic_dP_dr_jax(
                 r_grid,
-                Z,
+                z_skel,
                 jnp.maximum(n_principal.astype(jnp.int32), 1),
                 l_orbital.astype(jnp.int32),
             )

@@ -124,6 +124,35 @@ python scripts/v3_evaluate.py --run results/latest
 
 ---
 
+## Round 2 — Stage A 自洽 DFS 全组态预训练（Z≤26, n≤10）
+
+> 详见 [`16_stage_a_selfconsistent_dfs.md`](./16_stage_a_selfconsistent_dfs.md)。承接 Phase 1–3，回到 Stage A 把全组态跑通。
+
+| Phase | 步骤 | 输出 |
+|-------|------|------|
+| R0 | `v3_enumerate_configs.py` + 扩 `v3_prepare_nist_manifest.py`（任意 $l,J$ + `group` 标签） | `manifest_nist_z1_26_n10.parquet` + 双组覆盖率 |
+| R1 | `physics/dfs_potential.py` + `losses/scf_consistency.py` + 改 `deeponet.py`/`stage_a_trainer.py` + `configs/v3_stage_a_z1_26_n10.yaml` | 自洽 DFS 训练跑通、$V$ 渐近正确 |
+| R2 | 训练 + Gate A + `scripts/v3_eval_excitation_vs_nist.py` | `EXCITATION_VS_NIST.md`（双组各自 MAE/达标占比） |
+| R3 | 用新 ckpt 重跑多 CSF Stage C | `layer2_orb` MAE 下降、报告刷新 |
+
+**验收**：
+
+```bash
+cd rc_pinn_art_project && export PYTHONPATH=.
+python scripts/v3_enumerate_configs.py --z-max 26 --n-max 10
+python scripts/v3_prepare_nist_manifest.py --z-max 26 --n-levels 10 \
+  --out data_cache/manifest_nist_z1_26_n10.parquet
+pytest tests/test_dfs_potential.py tests/test_scf_consistency.py -q
+python scripts/v3_train_stage_a.py --config configs/v3_stage_a_z1_26_n10.yaml
+python scripts/v3_eval_excitation_vs_nist.py \
+  --config configs/v3_stage_a_z1_26_n10.yaml \
+  --ckpt checkpoints/v3_stage_a_z1_26_n10/stage_a_last.msgpack \
+  --out-dir logs/v3_stage_a_z1_26_n10
+# 期望：single_valence / multi_electron 两组分别给出达标占比
+```
+
+---
+
 ## 风险与降级
 
 | 风险 | 降级 |
@@ -132,3 +161,6 @@ python scripts/v3_evaluate.py --run results/latest
 | JAX eigh grad 不稳 | 增大 `eps_degen` + Custom VJP |
 | ms 延迟不达标 | 减 `n_grid`、蒸馏小模型 |
 | SIREN 不收敛 | 降 $\omega_0$，加 envelope bound |
+| DFS 自洽不收敛（R1） | `L_scf` 加 `stop_gradient` + warmup；先固定 $V_\mathrm{DFS}$ 后联立 |
+| 全组态枚举爆炸（R0） | 仅基态 + 单激发；高 n 仅留 NIST 收录组态 |
+| 高 Z 开壳难训（R2） | 课程式：闭壳→开壳、低 Z→高 Z |

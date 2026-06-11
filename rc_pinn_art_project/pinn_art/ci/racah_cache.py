@@ -90,9 +90,15 @@ def build_cache_from_manifest_rows(
     groups: dict[str, list[CSFSpec]] = {}
     for row in rows:
         parent = str(row["parent_config"])
+        J_raw = row.get("J", 0.5)
+        try:
+            import math
+            J_val = 0.0 if J_raw is None or (isinstance(J_raw, float) and math.isnan(J_raw)) else float(J_raw)
+        except (TypeError, ValueError):
+            J_val = 0.0
         spec = CSFSpec(
             level_config=str(row.get("level_config", parent)),
-            J=float(row.get("J", 0.5)),
+            J=J_val,
             parity=int(row.get("parity", 0)),
             term=str(row.get("term", "")),
         )

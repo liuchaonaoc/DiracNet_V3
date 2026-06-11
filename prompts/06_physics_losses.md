@@ -4,9 +4,11 @@
 
 ### Stage A — Dirac 预训练（主）
 
+Round 2 起总损失加入**自洽 DFS 一致性项** `L_scf`（见 `16_stage_a_selfconsistent_dfs.md`）：
+
 ```text
 L_A = w_pde·L_pde + w_ortho·L_ortho + w_asym·L_asym + w_norm·L_norm
-    + w_V·L_V_prior + w_smooth·L_V_smooth
+    + w_scf·L_scf + w_V·L_V_prior + w_smooth·L_V_smooth
 ```
 
 | 项 | 定义 | 默认权重 |
@@ -15,10 +17,13 @@ L_A = w_pde·L_pde + w_ortho·L_ortho + w_asym·L_asym + w_norm·L_norm
 | `L_ortho` | $\sum_{a\ne b}(\langle ab\rangle)^2$ | 100.0 |
 | `L_asym` | 远区 $P,Q$ 与 Whittaker 渐近形式 | 0.01 |
 | `L_norm` | $\|\int(P^2+Q^2)-1\|$ per orb | 10.0 |
-| `L_V_prior` | $\|\Delta V\|^2$ 或 $\|V+V_\mathrm{nuc}\|^2$ 正则 | 0.1 |
+| `L_scf` | $\|V_\mathrm{net}-\mathrm{sg}[V_\mathrm{DFS}[\rho]]\|^2$，DFS 屏蔽势自洽 | 1.0（Round 2） |
+| `L_V_prior` | （Round 2 锚点改为 $V_\mathrm{DFS}$）$\|V-V_\mathrm{DFS}\|^2$ 或裸 $\|V+V_\mathrm{nuc}\|^2$ | 0.1 |
 | `L_V_smooth` | $\|d^2V/dr^2\|^2$ | 1e-3 |
 
-**禁止**：`L_nist` 进入 `jax.grad`。
+其中 $V_\mathrm{DFS}[\rho]=-Z/r+V_H[\rho]+V_x[\rho]$ 由占据轨道密度 $\rho=\sum_a\omega_a(P_a^2+Q_a^2)$ 装配（Hartree 直接 + Slater Xα 交换 + Latter 尾部修正），全可微；`sg`=`stop_gradient`（先稳，后可联立）。实现见 `pinn_art/physics/dfs_potential.py`、`pinn_art/losses/scf_consistency.py`。
+
+**禁止**：`L_nist` 进入 `jax.grad`；屏蔽势用实验能级拟合。
 
 ### Stage B — CI 径向校准（可选）
 
@@ -46,7 +51,8 @@ pinn_art/losses/
 ├── ortho_loss.py
 ├── asymptotic_loss.py
 ├── potential_prior.py
-└── loss_schedule.py      # 按 epoch 调度 w_*
+├── scf_consistency.py    # Round 2：DFS 自洽一致性 L_scf
+└── loss_schedule.py      # 按 epoch 调度 w_*（含 scf warmup）
 ```
 
 ## 3. `pde_loss.py`

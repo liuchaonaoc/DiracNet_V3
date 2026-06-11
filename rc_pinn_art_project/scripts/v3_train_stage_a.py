@@ -18,7 +18,7 @@ import numpy as np
 
 from pinn_art.data.collate import collate_batches
 from pinn_art.data.dataset import ManifestDataset
-from pinn_art.losses.loss_schedule import stage_a_weights
+from pinn_art.losses.loss_schedule import stage_a_dfs_cfg, stage_a_weights
 from pinn_art.models.pinn_art_model import build_model_and_params
 from pinn_art.training.checkpoint import load_params, save_checkpoint
 from pinn_art.training.stage_a_trainer import train_step
@@ -28,22 +28,35 @@ from pinn_art.utils.grid import make_radial_grid
 from pinn_art.utils.logging import get_logger
 
 
-def _ensure_manifest(manifest: Path, cfg_path: Path) -> None:
-    if manifest.exists():
-        return
+def _prepare_manifest(manifest: Path, cfg) -> None:
+    """(Re)build the training manifest using the preparer named in the config.
+
+    ``dataset.prepare`` in {``hydrogenic`` (default), ``nist_z1_26_n10``}.
+    """
     log = get_logger()
-    log.info("Manifest missing, running v3_prepare_hydrogenic.py ...")
-    subprocess.check_call(
-        [
-            sys.executable,
-            str(ROOT / "scripts" / "v3_prepare_hydrogenic.py"),
-            "--z-min", "1",
-            "--z-max", "8",
-            "--n-levels", "6",
-            "--out", str(manifest),
-        ],
-        cwd=str(ROOT),
-    )
+    prepare = str(getattr(cfg.dataset, "prepare", "hydrogenic"))
+    if prepare == "nist_z1_26_n10":
+        log.info("Building Round-2 manifest via v3_prepare_nist_manifest.py ...")
+        subprocess.check_call(
+            [
+                sys.executable,
+                str(ROOT / "scripts" / "v3_prepare_nist_manifest.py"),
+                "--z-min", "1", "--z-max", "26", "--n-levels", "10",
+                "--out", str(manifest),
+            ],
+            cwd=str(ROOT),
+        )
+    else:
+        log.info("Building hydrogenic manifest via v3_prepare_hydrogenic.py ...")
+        subprocess.check_call(
+            [
+                sys.executable,
+                str(ROOT / "scripts" / "v3_prepare_hydrogenic.py"),
+                "--z-min", "1", "--z-max", "8", "--n-levels", "6",
+                "--out", str(manifest),
+            ],
+            cwd=str(ROOT),
+        )
 
 
 def _epoch_indices(n: int, steps: int, batch_size: int, rng: np.random.Generator, shuffle: bool) -> list[list[int]]:
@@ -63,6 +76,16 @@ def main():
     ap.add_argument("--config", default="configs/v3_phase1_stage_a_z1_8.yaml")
     ap.add_argument("--resume", default=None, help="Path to stage_a_last.msgpack params")
     ap.add_argument("--prepare-data", action="store_true", help="Force regenerate manifest")
+    # P1 curriculum / quick-experiment overrides
+    ap.add_argument("--z-min", type=int, default=None, help="Filter dataset to Z>=z_min")
+    ap.add_argument("--z-max", type=int, default=None, help="Filter dataset to Z<=z_max")
+    ap.add_argument("--ground-only", action="store_true", help="Keep only ground-state rows")
+    ap.add_argument("--epochs", type=int, default=None, help="Override stage_a.n_epochs")
+    ap.add_argument("--batch-size", type=int, default=None, help="Override stage_a.batch_size")
+    ap.add_argument("--tag", default=None, help="Suffix for ckpt_dir/log_dir (isolate experiments)")
+    ap.add_argument("--scf-weight-mode", default=None,
+                    choices=["density", "r2", "uniform", "r"],
+                    help="Override dfs.scf_weight_mode (P1 ablation)")
     args = ap.parse_args()
 
     cfg = load_config(ROOT / args.config)
@@ -71,24 +94,26 @@ def main():
 
     manifest = ROOT / cfg.dataset.manifest
     if args.prepare_data or not manifest.exists():
-        subprocess.check_call(
-            [
-                sys.executable,
-                str(ROOT / "scripts" / "v3_prepare_hydrogenic.py"),
-                "--z-min", "1",
-                "--z-max", "8",
-                "--n-levels", "6",
-                "--out", str(manifest),
-            ],
-            cwd=str(ROOT),
-        )
-    _ensure_manifest(manifest, ROOT / args.config)
+        _prepare_manifest(manifest, cfg)
 
     ds = ManifestDataset(
         manifest,
         n_orb_max=int(cfg.model.n_orb_max),
         n_csf_max=int(getattr(cfg.model, "n_csf_max", 8)),
     )
+    # P1 curriculum / subset filtering
+    n_before = len(ds)
+    mask = np.ones(n_before, dtype=bool)
+    if args.z_min is not None:
+        mask &= ds.df["Z"].to_numpy() >= args.z_min
+    if args.z_max is not None:
+        mask &= ds.df["Z"].to_numpy() <= args.z_max
+    if args.ground_only and "is_ground" in ds.df.columns:
+        mask &= ds.df["is_ground"].to_numpy().astype(bool)
+    if not mask.all():
+        ds.df = ds.df[mask].reset_index(drop=True)
+        log.info("Subset filter: %d -> %d rows (z_min=%s z_max=%s ground_only=%s)",
+                 n_before, len(ds), args.z_min, args.z_max, args.ground_only)
     grid = make_radial_grid(
         float(cfg.grid.r_min),
         float(cfg.grid.r_max),
@@ -108,16 +133,27 @@ def main():
 
     state = create_train_state(model, params, cfg, total_steps=100000)
     weights = stage_a_weights(cfg)
+    dfs_cfg = stage_a_dfs_cfg(cfg)
+    if args.scf_weight_mode is not None:
+        dfs_cfg = (*dfs_cfg[:5], args.scf_weight_mode)
+        log.info("Override scf_weight_mode=%s", args.scf_weight_mode)
+    log.info(
+        "DFS self-consistency: enabled=%s alpha_x=%.2f latter_tail=%s anchor_vprior=%s  w_scf=%.3g",
+        dfs_cfg[0], dfs_cfg[1], dfs_cfg[2], dfs_cfg[3], weights.get("scf", 0.0),
+    )
 
-    n_epochs = int(cfg.stage_a.n_epochs)
+    n_epochs = int(args.epochs) if args.epochs is not None else int(cfg.stage_a.n_epochs)
     steps = int(cfg.training.steps_per_epoch)
-    bs = int(cfg.stage_a.batch_size)
+    bs = int(args.batch_size) if args.batch_size is not None else int(cfg.stage_a.batch_size)
     shuffle = bool(getattr(cfg.training, "shuffle_each_epoch", True))
     ckpt_every = int(getattr(cfg.training, "ckpt_every_epochs", 0))
     val_every = int(getattr(cfg.training, "val_every_epochs", 25))
 
     ckpt_dir = ROOT / cfg.training.ckpt_dir
     log_dir = ROOT / cfg.training.log_dir
+    if args.tag:
+        ckpt_dir = ckpt_dir.parent / f"{ckpt_dir.name}_{args.tag}"
+        log_dir = log_dir.parent / f"{log_dir.name}_{args.tag}"
     ckpt_dir.mkdir(parents=True, exist_ok=True)
     log_dir.mkdir(parents=True, exist_ok=True)
     history_path = log_dir / "history.csv"
@@ -134,7 +170,7 @@ def main():
     warm_batch = collate_batches([ds[i] for i in warm_idx], n_csf_max=int(cfg.model.n_csf_max))
     log.info("Compiling JIT train_step on %s (first call traces XLA, ~15-25s)...", jax.default_backend())
     t_compile = time.perf_counter()
-    state, _ = train_step(state, warm_batch, grid, weights)
+    state, _ = train_step(state, warm_batch, grid, weights, dfs_cfg)
     jax.block_until_ready(state.params)
     compile_sec = time.perf_counter() - t_compile
     log.info("JIT compile done in %.1fs (steady-state ~0.05-0.2s/step expected)", compile_sec)
@@ -142,7 +178,7 @@ def main():
     with history_path.open("a", newline="") as hf:
         writer = csv.DictWriter(
             hf,
-            fieldnames=["epoch", "loss", "pde", "ortho", "asym", "norm", "v_prior", "v_smooth"],
+            fieldnames=["epoch", "loss", "pde", "ortho", "asym", "norm", "v_prior", "v_smooth", "scf"],
         )
         if write_header:
             writer.writeheader()
@@ -160,14 +196,14 @@ def main():
                     idx = [(step_idx * bs + i) % len(ds) for i in range(bs)]
                 items = [ds[i] for i in idx]
                 batch = collate_batches(items, n_csf_max=int(cfg.model.n_csf_max))
-                state, metrics = train_step(state, batch, grid, weights)
+                state, metrics = train_step(state, batch, grid, weights, dfs_cfg)
                 epoch_loss += float(metrics["loss"])
                 last_metrics = {k: float(v) for k, v in metrics.items()}
 
             row = {
                 "epoch": epoch,
                 "loss": epoch_loss / steps,
-                **{k: last_metrics.get(k, 0.0) for k in ["pde", "ortho", "asym", "norm", "v_prior", "v_smooth"]},
+                **{k: last_metrics.get(k, 0.0) for k in ["pde", "ortho", "asym", "norm", "v_prior", "v_smooth", "scf"]},
             }
             writer.writerow(row)
             hf.flush()

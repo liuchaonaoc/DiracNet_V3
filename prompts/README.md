@@ -23,6 +23,7 @@
 | ★ | [12_test_plan.md](./12_test_plan.md) | L0–L4 测试矩阵 |
 | ★ | [13_port_from_v2.md](./13_port_from_v2.md) | 从 V2 移植/改写的模块清单 |
 | ★ | [14_degenerate_gradient_safety.md](./14_degenerate_gradient_safety.md) | `eigh` 简并梯度、Custom VJP |
+| ★★★ | [16_stage_a_selfconsistent_dfs.md](./16_stage_a_selfconsistent_dfs.md) | **Round 2 主入口**：回到 Stage A，自洽 DFS 全组态预训练（Z≤26, n≤10）+ 双组激发能 vs NIST |
 
 ## 与历史版本关系
 

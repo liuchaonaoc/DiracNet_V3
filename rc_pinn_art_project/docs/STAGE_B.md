@@ -56,7 +56,10 @@ PYTHONPATH=. python scripts/v3_gate_ci.py \
 | B.2 `eigh` 梯度 | 有限、无 NaN |
 | B.3 Manifest | 48 行 \|E_csf − E_orb\| < 50 meV |
 
-报告：`logs/v3_phase1_stage_b_z1_8/gate_b_report.json`
+报告：
+
+- 机器可读：`logs/v3_phase1_stage_b_z1_8/gate_b_report.json`
+- 中文评估报告：`logs/v3_phase1_stage_b_z1_8/STAGE_B_EVALUATION_REPORT.md`
 
 ## 4. 下一步（Stage C）
 

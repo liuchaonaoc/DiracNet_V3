@@ -52,6 +52,24 @@ def level_metrics(E_pred, E_ref, nist_mask):
 }
 ```
 
+### Layer-2b 双组激发能 vs NIST（Stage A Round 2，不注入）
+
+见 `16_stage_a_selfconsistent_dfs.md` §R2。Stage A 自洽 DFS 训练后，对 **Z≤26 / n≤10 全组态**做激发能 vs NIST 评估，**两组分别报告**（均与 NIST 比，口径分开）：
+
+| 组 | 能量来源（`nist_inject:false`） | 比较对象 | 建议达标 |
+|----|--------------------------------|----------|----------|
+| `single_valence` | 直接用 `E_orb` 之差 | NIST 激发能 | 多数 < 50 meV 或 < 0.2% |
+| `multi_electron` | 理论 CI（`E_orb`+Slater $R^k$+Racah） | NIST 激发能 | 多数 < 数百 meV |
+
+脚本 `scripts/v3_eval_excitation_vs_nist.py` 输出 `EXCITATION_VS_NIST.md`（两节）+ `metrics.json`：
+
+```json
+"layer2b": {
+  "single_valence": {"mae_meV": 41.0, "median_rel_err": 0.0017, "n": 380, "pass_fraction": 0.86},
+  "multi_electron": {"mae_meV": 220.0, "median_rel_err": 0.004, "n": 540, "pass_fraction": 0.71}
+}
+```
+
 ### Layer-3 跃迁与截面
 
 ```text
