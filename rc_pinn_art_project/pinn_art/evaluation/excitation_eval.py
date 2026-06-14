@@ -8,9 +8,12 @@ Groups (see ``prompts/08_evaluation.md`` §Layer-2b):
 
 from __future__ import annotations
 
+import time
 from dataclasses import dataclass
 from typing import Any
 
+import jax
+import jax.numpy as jnp
 import numpy as np
 import pandas as pd
 
@@ -119,16 +122,27 @@ def build_prediction_cache(
     k_list: tuple[int, ...] | None = None,
     use_ci: bool = False,
     row_lookup: dict[tuple[int, int, str], int] | None = None,
+    batch_size: int = 64,
 ) -> dict[tuple[int, int, str], dict]:
-    """Run forward pass once per unique (Z, ion, level_config)."""
+    """Run forward pass once per unique (Z, ion, level_config).
+
+    Performance notes (R2.2 speedup, see PROGRESS §18):
+      - 一次性用 return_ci=True 跑, 同时得到 E_orb (单电子) 和 E_csf (多电子)
+        避免单/多电子两轮独立 forward 浪费 2x 时间
+      - batch_size 个 config 一批, 一次 model.apply -> 一次 JAX dispatch
+        避免 N 个 config 各自一次 dispatch
+      - 外层用 jax.jit 包裹整批 apply, 编译一次反复调用
+    """
+    import jax
     from ..data.collate import collate_batches
 
-    cache: dict[tuple[int, int, str], dict] = {}
+    # 1) 收集所有 idx + key
+    key_idx: list[tuple[tuple[int, int, str], int]] = []
     for key in unique_keys:
-        Z, ion, cfg = key
         if row_lookup is not None:
-            idx = row_lookup[key]
+            key_idx.append((key, row_lookup[key]))
         else:
+            Z, ion, cfg = key
             hits = ds.df[
                 (ds.df["Z"] == Z)
                 & (ds.df["ion_charge"] == ion)
@@ -136,31 +150,89 @@ def build_prediction_cache(
             ].index
             if len(hits) == 0:
                 continue
-            idx = int(hits[0])
+            key_idx.append((key, int(hits[0])))
+
+    if not key_idx:
+        return {}
+
+    # 2) 固定 batch_size + pad, 这样 JAX 一次 trace 后所有 chunk 复用
+    n_total = len(key_idx)
+    n_full = (n_total // batch_size) * batch_size
+
+    @jax.jit
+    def _batched_apply(batch_dict):
+        return model.apply(params, batch_dict, grid, train=False, return_ci=True)
+
+    cache: dict[tuple[int, int, str], dict] = {}
+    t0 = time.perf_counter()
+    # 3) 完整 chunk (B == batch_size) 用 jit 加速
+    for chunk_start in range(0, n_full, batch_size):
+        chunk = key_idx[chunk_start: chunk_start + batch_size]
+        items = [ds[idx] for _, idx in chunk]
         batch = collate_batches(
-            [ds[idx]],
+            items,
             n_csf_max=n_csf_max,
             racah_cache=racah_cache,
             k_list=k_list if racah_cache else None,
         )
         if use_ci:
             n_orb = batch["omega"].shape[1]
-            csf_to_orb = np.zeros((1, n_csf_max, n_orb), dtype=np.float32)
-            om = np.asarray(batch["omega"][0], dtype=np.float32)
-            mask = np.asarray(batch["orb_mask"][0], dtype=bool)
-            csf_to_orb[0, 0, :] = om * mask
-            batch["csf_to_orb"] = csf_to_orb
-        out = model.apply(params, batch, grid, train=False, return_ci=use_ci)
-        E_orb = np.asarray(out["E_orb"][0])
-        E_csf = float(out["E_csf"][0, 0]) if use_ci and out.get("E_csf") is not None else float("nan")
-        cache[key] = {
-            "E_orb_ha": E_orb,
-            "E_csf_ha": E_csf,
-            "omega": np.asarray(batch["omega"][0]),
-            "orb_mask": np.asarray(batch["orb_mask"][0]),
-            "shell_table": np.asarray(batch["shell_table"][0]),
-        }
+            csf_to_orb = np.zeros((batch_size, n_csf_max, n_orb), dtype=np.float32)
+            om = np.asarray(batch["omega"], dtype=np.float32)
+            mask = np.asarray(batch["orb_mask"], dtype=bool)
+            csf_to_orb[:, 0, :] = om * mask
+            batch["csf_to_orb"] = jax.numpy.asarray(csf_to_orb)
+
+        out = _batched_apply(batch)
+        _accumulate_cache(out, batch, chunk, cache, use_ci)
+
+        if (chunk_start // batch_size) % 5 == 0:
+            elapsed = time.perf_counter() - t0
+            done = chunk_start + batch_size
+            rate = done / max(elapsed, 1e-6)
+            eta_s = (n_total - done) / max(rate, 1e-6)
+            print(f"  eval forward: {done}/{n_total} configs  "
+                  f"({rate:.1f}/s, ETA {eta_s:.0f}s)", flush=True)
+
+    # 4) 剩余不完整 chunk: 单跑, 接受 re-trace 开销
+    if n_total > n_full:
+        chunk = key_idx[n_full:]
+        items = [ds[idx] for _, idx in chunk]
+        batch = collate_batches(
+            items,
+            n_csf_max=n_csf_max,
+            racah_cache=racah_cache,
+            k_list=k_list if racah_cache else None,
+        )
+        if use_ci:
+            n_orb = batch["omega"].shape[1]
+            csf_to_orb = np.zeros((len(chunk), n_csf_max, n_orb), dtype=np.float32)
+            om = np.asarray(batch["omega"], dtype=np.float32)
+            mask = np.asarray(batch["orb_mask"], dtype=bool)
+            csf_to_orb[:, 0, :] = om * mask
+            batch["csf_to_orb"] = jax.numpy.asarray(csf_to_orb)
+        out = model.apply(params, batch, grid, train=False, return_ci=True)
+        _accumulate_cache(out, batch, chunk, cache, use_ci)
+
     return cache
+
+
+def _accumulate_cache(out, batch, chunk, cache, use_ci):
+    """把一个 chunk 的 forward 结果拆分成 cache 字典."""
+    E_orb_b = np.asarray(out["E_orb"])  # [B, n_orb]
+    E_csf_b = np.asarray(out["E_csf"]) if out.get("E_csf") is not None else None
+    omega_b = np.asarray(batch["omega"])
+    mask_b = np.asarray(batch["orb_mask"])
+    shell_b = np.asarray(batch["shell_table"])
+    for j, (key, _) in enumerate(chunk):
+        E_csf = float(E_csf_b[j, 0]) if (use_ci and E_csf_b is not None) else float("nan")
+        cache[key] = {
+            "E_orb_ha": E_orb_b[j],
+            "E_csf_ha": E_csf,
+            "omega": omega_b[j],
+            "orb_mask": mask_b[j],
+            "shell_table": shell_b[j],
+        }
 
 
 def assemble_excitation_table(
@@ -262,8 +334,12 @@ def summarize_group(
     sub = df[(df["group"] == group) & (~df["is_ground"]) & df["has_nist_level"]]
     n = len(sub)
     if n == 0:
-        return {"group": group, "n": 0, "mae_meV": float("nan"), "median_meV": float("nan"),
-                "median_rel_err": float("nan"), "coverage": 0.0, "pass_fraction": 0.0}
+        return {"group": group, "n": 0, "n_total_excited": 0,
+                "mae_meV": float("nan"), "median_meV": float("nan"),
+                "median_rel_err": float("nan"), "coverage": 0.0, "pass_fraction": 0.0,
+                "mae_threshold_meV": float("nan"),
+                "rel_err_threshold": float("nan"),
+                "verdict": "FAIL"}
     mae = float(sub["err_meV"].mean())
     med = float(sub["err_meV"].median())
     med_rel = float(sub["rel_err"].median())

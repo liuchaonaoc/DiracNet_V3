@@ -1,0 +1,14 @@
+__pycache__/
+*.py[cod]
+.pytest_cache/
+*.egg-info/
+.eggs/
+dist/
+build/
+data_cache/
+data_raw/
+checkpoints/
+logs/
+results/
+*.pt
+*.msgpack

@@ -1,0 +1,112 @@
+# Stage A — Round 3' (B'): Path A 物理实现 (R^k → V_dfs 注入)
+# 目的: 在 SCF 损失中用 V_dfs + V_slater_corr 替代 V_dfs, 修复 He 1s² E_orb 偏浅
+# 根因 (per PROGRESS_REPORT §13.3):
+#   - E-prime 的 V_dfs 在 N≥2 时缺少 R^k 屏蔽 → V_net 被推到一个不准确的势
+#   - 验证 (§13.4) 表明: V_slater_corr 在 P 振幅峰值区 r∈[0.3, 3] 有真实值
+#     (与 latter_tail 的"在 P 振幅小区"截然不同), 所以 E_orb 真的会被改
+#   - 公式强度: slater_log_scale=0 (默认) → 过头 2-3x
+#     → 训练时让 slater_log_scale 学到 ln(0.36) ≈ -1.02
+# 期望:
+#   - He 1s² E_orb 从 -74 → -108 eV (NIST = -108.85 eV)
+#   - He 1s² E_orb_omega 从 -149 → -218 eV (NIST = -217.69 eV)
+#   - single_valence 不变 (H/He⁺ 单电子)
+# 风险:
+#   - 公式过度局域化可能让中间区 V 偏激 → slater_log_scale 训练时被负梯度拉回
+#   - 续训时 init slater_log_scale=0 → 初期 V_dfs 跳变 → H 锚点会暂时漂 5-20 meV
+#     (E-prime 本身的锚点监控 + 早停会处理)
+# 验证:
+#   - 训后跑 v3_verify_path_a_potential.py 看 slater_log_scale 实际值
+#   - 跑 v3_eval_excitation_vs_nist.py 验证 Z≤2 multi_electron MAE
+
+seed: 42
+
+grid:
+  r_min: 1.0e-2
+  r_max: 50.0
+  n_grid: 256
+  scheme: loglinear
+
+coords:
+  c1: 1.0
+  c2: 1.0
+
+model:
+  n_orb_max: 16
+  n_csf_max: 8
+  d_branch: 128
+  d_trunk: 128
+  n_siren_layers: 4
+  omega_0: 20.0
+  apply_lowdin: false
+  use_hydrogenic_skeleton: true
+  perturb_eps: 0.2
+  use_zeff_warmstart: true
+
+# ci.enabled 必须为 true (slater_log_scale 才会被创建)
+ci:
+  enabled: true
+  nist_inject: false
+  k_list: [0, 1, 2]
+  M_max: 8
+  racah_cache: data_cache/racah_cache_z1_26_n10.npz
+
+# B' (Path A): 关键开关 + E-prime 的 scf_weight=5.0
+dfs:
+  enabled: true
+  alpha_x: 1.0
+  latter_tail: true
+  anchor_vprior: true
+  fermi_amaldi: true
+  scf_weight_mode: density
+  # B''''' fix: V_slater_corr 注入 ×0.5 (见 slater_correction.V_SLATER_INJECT_SCALE)
+  #  - B'''' 实跑: exp=0.37 倍注入让 V_dfs_aug 偏离 V_net 太大 (V(r~1) diff=-0.99 vs B'' -0.10)
+  #  - He 1s² 30 epoch 退化 6.7 eV (V_slater_corr 起步太强)
+  #  - 改 slater_correction.py 全局乘子到 0.5 (半幅起步)
+  #  - scf_weight 同步降到 1.0 (2.0→1.0), 让 SCF 一致性约束松一些
+  #  - 期望: V_dfs_aug 与 V_net 在更温和范围内一致, slater_log_scale 仍可学
+  path_a_enabled: true
+
+stage_a:
+  n_epochs: 600                # B' 续训 epochs (起点 E-prime 已训充分, 不需 4000)
+  batch_size: 16
+  weights:
+    pde: 1.0
+    ortho: 100.0
+    asym: 0.1
+    norm: 10.0
+    v_prior: 1.0
+    v_smooth: 1.0e-6
+    scf: 1.0                   # B''''' fix: 2.0→1.0 (V_slater_corr ×0.5 注入, scf 同步降权)
+  gate:
+    cos_threshold: 0.99
+    pde_threshold: 1.0e-2
+    e_orb_meV_threshold: 50.0
+  eval:
+    single_valence:
+      mae_meV_threshold: 50.0
+      rel_err_threshold: 0.002
+    multi_electron:
+      mae_meV_threshold: 500.0
+      rel_err_threshold: 0.01
+
+optimizer:
+  lr_trunk: 1.0e-4             # 续训 lr 降一档 (E-prime 0.3x → 0.1x)
+  lr_branch: 3.0e-5
+  weight_decay: 1.0e-4
+  grad_clip: 1.0
+  # B' fix: slater_log_scale 单独 10x lr (新参数, 起点 -1.0 需快速微调)
+  slater_log_scale_lr_mult: 10.0
+
+training:
+  ckpt_dir: ./checkpoints/v3_stage_a_z1_26_n10
+  log_dir: ./logs/v3_stage_a_z1_26_n10
+  steps_per_epoch: 24
+  val_every_epochs: 25
+  ckpt_every_epochs: 50
+  shuffle_each_epoch: true
+
+dataset:
+  manifest: data_cache/manifest_nist_z1_26_n10.parquet
+  prepare: nist_z1_26_n10
+  n_orb_max: 16
+  n_csf_max: 8

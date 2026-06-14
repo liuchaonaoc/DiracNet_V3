@@ -22,11 +22,11 @@ def stage_a_weights(cfg) -> dict[str, float]:
     }
 
 
-def stage_a_dfs_cfg(cfg) -> tuple[bool, float, bool, bool, bool, str, bool]:
+def stage_a_dfs_cfg(cfg) -> tuple[bool, float, bool, bool, bool, str, bool, bool]:
     """Read Stage-A DFS settings.
 
     -> (enabled, alpha_x, latter_tail, anchor_vprior, fermi_amaldi,
-        scf_weight_mode, anchor_vprior_zeff)
+        scf_weight_mode, anchor_vprior_zeff, path_a_enabled)
 
     ``enabled`` defaults to True when ``cfg.dfs`` exists or ``weights.scf>0``.
     ``fermi_amaldi`` defaults to True (P0 self-interaction-correction fix).
@@ -35,13 +35,17 @@ def stage_a_dfs_cfg(cfg) -> tuple[bool, float, bool, bool, bool, str, bool]:
     ``anchor_vprior_zeff`` (R1.5, 路径 B) replaces the V_dfs anchor with
         the Slater-screened effective-charge potential ``-Z_anchor/r`` (when
         both are requested, zeff takes precedence). False by default.
+    ``path_a_enabled`` (B') injects R^k Slater correction into V_dfs (target of
+        SCF loss). Forces forward to compute R^k (return_ci=True). False by
+        default.
     Returned as a hashable tuple so it can be a static JIT argument.
     """
     dfs = getattr(cfg, "dfs", None)
     weights = getattr(getattr(cfg, "stage_a", None), "weights", None)
     scf_w = float(getattr(weights, "scf", 0.0)) if weights is not None else 0.0
+    path_a_enabled = bool(getattr(dfs, "path_a_enabled", False)) if dfs is not None else False
     if dfs is None:
-        return (scf_w > 0.0, 1.0, True, scf_w > 0.0, True, "density", False)
+        return (scf_w > 0.0, 1.0, True, scf_w > 0.0, True, "density", False, path_a_enabled)
     enabled = bool(getattr(dfs, "enabled", True))
     alpha_x = float(getattr(dfs, "alpha_x", 1.0))
     latter_tail = bool(getattr(dfs, "latter_tail", True))
@@ -50,7 +54,7 @@ def stage_a_dfs_cfg(cfg) -> tuple[bool, float, bool, bool, bool, str, bool]:
     scf_weight_mode = str(getattr(dfs, "scf_weight_mode", "density"))
     anchor_vprior_zeff = bool(getattr(dfs, "anchor_vprior_zeff", False))
     return (enabled, alpha_x, latter_tail, anchor_vprior, fermi_amaldi,
-            scf_weight_mode, anchor_vprior_zeff)
+            scf_weight_mode, anchor_vprior_zeff, path_a_enabled)
 
 
 def stage_b_weights(cfg) -> dict[str, float]:

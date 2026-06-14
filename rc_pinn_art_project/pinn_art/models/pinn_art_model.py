@@ -129,11 +129,18 @@ class PinnArtModel(nn.Module):
 
             slater_log_scale = self.param(
                 "slater_log_scale",
-                nn.initializers.zeros,
+                # B'''' fix: init 到 -1.0 (exp=0.37, 诊断最优值)
+                # 原因 (per §13, §20):
+                #  - -3.0 (exp=0.05): 210 epoch 不动, V_slater 实质为 0
+                #  - -1.0 (exp=0.37): §13 诊断最优值, 一次性给到
+                #  - 配合 multi_transform 10x lr (B' fix v2 移除), 让 slater_log_scale 真正能动
+                lambda key, shape, dtype=jnp.float32: jnp.full(shape, -1.0, dtype=dtype),
                 (len(self.k_list),),
             )
             Rk = compute_all_Rk_diagonal(P, Q, orb_mask, grid, k_list=self.k_list)
             Rk = Rk * jnp.exp(slater_log_scale)[None, :, None]
+            # B' (Path A): 把 slater_log_scale 暴露给 trainer (注入 SCF 损失)
+            out["slater_log_scale"] = slater_log_scale
 
             csf_to_orb = batch.get("csf_to_orb")
             if csf_to_orb is not None:

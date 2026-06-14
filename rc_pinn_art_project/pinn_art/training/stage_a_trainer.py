@@ -19,12 +19,13 @@ from ..physics.dfs_potential import (
     electron_density,
     zeff_anchor_potential,
 )
+from ..physics.slater_correction import slater_correction_potential
 from ..utils.grid import RadialGrid
 
 # (enabled, alpha_x, latter_tail, anchor_vprior, fermi_amaldi, scf_weight_mode,
-#  anchor_vprior_zeff)
+#  anchor_vprior_zeff, path_a_enabled)
 # bare-hydrogenic Round-1 default
-_NO_DFS = (False, 1.0, True, False, True, "density", False)
+_NO_DFS = (False, 1.0, True, False, True, "density", False, False)
 
 
 def _scf_radial_weight(mode: str, rho, r):
@@ -69,7 +70,7 @@ def compute_stage_a_loss(
     shell_table = batch.get("shell_table")
     n_principal = shell_table[:, : kappa.shape[1], 0] if shell_table is not None else None
 
-    dfs_enabled, alpha_x, latter_tail, anchor_vprior, fermi_amaldi, scf_weight_mode, anchor_vprior_zeff = dfs_cfg
+    dfs_enabled, alpha_x, latter_tail, anchor_vprior, fermi_amaldi, scf_weight_mode, anchor_vprior_zeff, path_a_enabled = dfs_cfg
     V_dfs = None
     V_zeff_anchor = None
     scf_weight = None
@@ -87,6 +88,21 @@ def compute_stage_a_loss(
                 Z, n_principal, omega, orb_mask, grid,
             )
 
+    # B' (Path A) inject: V_target = V_dfs + V_slater_corr (R^k→V_dfs 注入)
+    # slater_log_scale 已在 model.__call__ 创建 (init=-3.0, exp=0.05)
+    # Rk 来自 out["Rk"] (compute_all_Rk_diagonal 在 model 内已算)
+    V_dfs_aug = V_dfs
+    if path_a_enabled:
+        Rk = out.get("Rk")
+        slater_log_scale = out.get("slater_log_scale")
+        if Rk is not None and slater_log_scale is not None:
+            V_slater = slater_correction_potential(
+                P, Q, omega, Rk, slater_log_scale, rho,
+            )
+            # B' fix v3: stop_gradient V_slater 防止其经 scf_loss 反传 P/Q 梯度
+            # (E-prime baseline 训练时无此通道, 加上后破坏 H 1s 锚点)
+            V_dfs_aug = V_dfs + jax.lax.stop_gradient(V_slater)
+
     l_pde = dirac_pde_loss(P, Q, dPdr, dQdr, V, kappa, r, grid, orb_mask, E_orb=out["E_orb"])
     l_ortho = orthonormality_loss(P, Q, grid, orb_mask)
     l_asym = asymptotic_tail_loss(P, Q, r, orb_mask, Z=Z, n_principal=n_principal)
@@ -97,9 +113,10 @@ def compute_stage_a_loss(
     l_vs = potential_smooth_loss(V, r)
     # P1: density-weighted SCF (was r^2, which let V_net drift in the valence
     # region where the binding energy is set — see EXCITATION_VS_NIST.md §A.2).
+    # B' (Path A): SCF target = V_dfs_aug = V_dfs + V_slater_corr
     l_scf = (
-        scf_consistency_loss(V, V_dfs, weight=scf_weight)
-        if V_dfs is not None
+        scf_consistency_loss(V, V_dfs_aug, weight=scf_weight)
+        if V_dfs_aug is not None
         else jnp.asarray(0.0, dtype=V.dtype)
     )
 
@@ -128,9 +145,13 @@ def compute_stage_a_loss(
 @partial(jax.jit, static_argnames=("weights_key", "dfs_cfg"))
 def _train_step_jit(state, batch, grid: RadialGrid, weights_vals, weights_key, dfs_cfg):
     weights = dict(zip(weights_key, weights_vals))
+    # B''' fix: 跟随 dfs_cfg[7] (path_a_enabled) 决定 return_ci
+    # - path_a_enabled=True  → return_ci=True (model 创建 slater_log_scale, V_slater 可注入)
+    # - path_a_enabled=False → return_ci=False (baseline 模式, fast)
+    return_ci_flag = bool(dfs_cfg[7])  # path_a_enabled 控制 return_ci
 
     def loss_fn(params):
-        out = state.apply_fn(params, batch, grid, train=True, return_ci=False)
+        out = state.apply_fn(params, batch, grid, train=True, return_ci=return_ci_flag)
         loss, metrics = compute_stage_a_loss(out, batch, grid, weights, dfs_cfg)
         return loss, metrics
 

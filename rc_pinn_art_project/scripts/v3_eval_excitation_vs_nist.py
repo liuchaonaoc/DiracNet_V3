@@ -117,27 +117,15 @@ def main():
     n_csf = int(getattr(cfg.model, "n_csf_max", 8))
 
     t0 = time.perf_counter()
-    log.info("Forward pass: %d unique configs (single_valence E_orb)...", len(all_keys))
-    sv_cache = build_prediction_cache(
-        all_keys, ds, model, params, grid,
-        n_csf_max=n_csf, use_ci=False, row_lookup=row_lookup,
-    )
-
-    log.info("Forward pass: %d unique configs (multi_electron CI)...", len(all_keys))
-    me_cache = build_prediction_cache(
+    log.info("Forward pass: %d unique configs (batched, use_ci=True)...",
+             len(all_keys))
+    # 一次性 return_ci=True 拿到 E_orb (单电子) + E_csf (多电子),
+    # 避免之前双 forward 的 2x 开销
+    pred_cache = build_prediction_cache(
         all_keys, ds, model, params, grid,
         n_csf_max=n_csf, racah_cache=racah_cache, k_list=k_tuple,
         use_ci=True, row_lookup=row_lookup,
     )
-
-    # Merge caches: single_valence uses sv E_orb; multi uses me (CI) totals
-    pred_cache: dict = {}
-    for key in all_keys:
-        if key not in sv_cache:
-            continue
-        pred_cache[key] = {**sv_cache[key]}
-        if key in me_cache:
-            pred_cache[key]["E_csf_ha"] = me_cache[key]["E_csf_ha"]
 
     ground_cache = {
         k: pred_cache[k] for k in ground_keys if k in pred_cache
