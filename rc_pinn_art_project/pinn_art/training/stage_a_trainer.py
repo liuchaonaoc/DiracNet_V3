@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 from functools import partial
 
 import jax
@@ -9,10 +10,12 @@ import jax.numpy as jnp
 import optax
 
 from ..losses.asymptotic_loss import asymptotic_tail_loss
+from ..losses.coeff_loss import coeff_decay_loss, lambda_prior_loss
 from ..losses.norm_loss import normalization_loss
 from ..losses.ortho_loss import orthonormality_loss
 from ..losses.pde_loss import dirac_pde_loss
 from ..losses.potential_prior import potential_prior_loss, potential_smooth_loss
+from ..losses.q_corr_loss import q_residual
 from ..losses.scf_consistency import scf_consistency_loss
 from ..physics.dfs_potential import (
     build_dfs_potential,
@@ -120,6 +123,44 @@ def compute_stage_a_loss(
         else jnp.asarray(0.0, dtype=V.dtype)
     )
 
+    # --- Stage A Round 2: Laguerre-basis regularizers ---
+    # These three terms are computed only when the Laguerre basis is active.
+    # `out["laguerre_*"]` is set in `PinnArtModel.__call__` only when
+    # `use_laguerre_basis=True`.  Otherwise the dict key is absent and the
+    # value defaults to 0.
+    K_max = 9  # default; matched at init in DeepONetDirac(K_max=9)
+    lag_coeffs = out.get("laguerre_coeffs")
+    lag_lambdas = out.get("laguerre_lambdas")
+    lag_lambda_init = out.get("laguerre_lambda_init")
+    lag_deltaQ = out.get("laguerre_deltaQ")
+    if bool(os.environ.get("PINNART_DEBUG_LAG")) and jax.process_index() == 0:
+        _lc = "None" if lag_coeffs is None else f"shape={lag_coeffs.shape}"
+        _ll = "None" if lag_lambdas is None else f"shape={lag_lambdas.shape}"
+        _ldq = "None" if lag_deltaQ is None else f"shape={lag_deltaQ.shape}"
+        print(f"  [lag-dbg] coeff={_lc}  lambdas={_ll}  deltaQ={_ldq}", flush=True)
+    l_coeff = (
+        coeff_decay_loss(lag_coeffs, K_max) if lag_coeffs is not None
+        else jnp.asarray(0.0, dtype=V.dtype)
+    )
+    if lag_lambdas is not None and lag_lambda_init is not None:
+        # Per-batch λ_init is `Z_eff / n` for each row's (Z, n, l).
+        # For inactive orbital slots both `lag_lambdas` and
+        # `lag_lambda_init` are 1.0 (placeholder), so the loss vanishes
+        # for those slots naturally — no extra mask required.
+        l_lambda = lambda_prior_loss(lag_lambdas, lag_lambda_init)
+    else:
+        l_lambda = jnp.asarray(0.0, dtype=V.dtype)
+    l_q = (
+        q_residual(P, dPdr, V, kappa, grid,
+                   deltaQ=lag_deltaQ,
+                   perturb_scale_Q=jnp.asarray(
+                       weights.get("_perturb_scale_Q", jnp.float32(0.05)),
+                       dtype=jnp.float32,
+                   ))
+        if lag_deltaQ is not None
+        else jnp.asarray(0.0, dtype=V.dtype)
+    )
+
     total = (
         weights["pde"] * l_pde
         + weights["ortho"] * l_ortho
@@ -128,6 +169,9 @@ def compute_stage_a_loss(
         + weights["v_prior"] * l_vp
         + weights["v_smooth"] * l_vs
         + weights.get("scf", 0.0) * l_scf
+        + weights.get("coeff_decay", 0.0) * l_coeff
+        + weights.get("lambda_prior", 0.0) * l_lambda
+        + weights.get("q_residual", 0.0) * l_q
     )
     metrics = {
         "loss": total,
@@ -138,6 +182,9 @@ def compute_stage_a_loss(
         "v_prior": l_vp,
         "v_smooth": l_vs,
         "scf": l_scf,
+        "coeff_decay": l_coeff,
+        "lambda_prior": l_lambda,
+        "q_residual": l_q,
     }
     return total, metrics
 

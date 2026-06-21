@@ -1,0 +1,16 @@
+# cFAC single-electron ns at Z=2, n=7
+
+SetAtom('He', 2)
+
+SetRadialGrid(400, 1.05, 8.0, 1.0e-6)
+
+Config('g', '7s1')
+
+ConfigEnergy(0)
+OptimizeRadial(['g'])
+ConfigEnergy(1)
+
+GetPotential('cf_Z2_n7_V.dat')
+WaveFuncTable('cf_Z2_n7_PQ.dat', 7, -1)
+
+Print('done: Z=2, n=7')

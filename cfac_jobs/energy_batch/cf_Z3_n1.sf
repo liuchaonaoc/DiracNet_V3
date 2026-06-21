@@ -1,0 +1,16 @@
+# cFAC job: mid-Z low-n  Li 1s   (Z=3, n=1, l=0)
+
+SetAtom('Li', 3)
+
+SetRadialGrid(400, 1.05, 8.0, 1.0e-6)
+
+Config('g', '1s1')
+
+ConfigEnergy(0)
+OptimizeRadial(['g'])
+ConfigEnergy(1)
+
+GetPotential('cf_Z3_n1_V.dat')
+WaveFuncTable('cf_Z3_n1_PQ.dat', 1, -1)
+
+Print('done: Z=3, n=1')

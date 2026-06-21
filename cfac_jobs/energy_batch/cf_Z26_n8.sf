@@ -1,0 +1,17 @@
+# cFAC job: high-Z high-n  Fe 8s   (Z=26, n=8, l=0)
+
+SetAtom('Fe', 26)
+
+# 8s extent ~ 64/26 ~ 2.5 a.u.
+SetRadialGrid(800, 1.05, 12.0, 1.0e-6)
+
+Config('g', '8s1')
+
+ConfigEnergy(0)
+OptimizeRadial(['g'])
+ConfigEnergy(1)
+
+GetPotential('cf_Z26_n8_V.dat')
+WaveFuncTable('cf_Z26_n8_PQ.dat', 8, -1)
+
+Print('done: Z=26, n=8')

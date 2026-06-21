@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import jax
 import jax.numpy as jnp
+import numpy as np
+import flax.core
 from flax import linen as nn
 
 from ..ci.eigen_solver import safe_eigh
@@ -13,6 +15,13 @@ from ..ci.slater_radial import compute_all_Rk_diagonal
 from ..coords.mixed_map import MixedRadialMap
 from ..coords.shell_features import branch_input_dim, build_branch_features
 from ..nets.deeponet import DeepONetDirac
+from ..nets.laguerre_basis import (
+    LaguerreCoeffHead,
+    LaguerreLambdaHead,
+    LaguerreQCorrHead,
+    laguerre_p_sum_with_r,
+)
+from ..physics.hydrogenic import hydrogenic_laguerre_coeffs  # noqa: F401  (used by `DeepONetDirac` via the `_per_orbital_laguerre_init` re-export)
 from ..observables.collision import collision_cross_section_ce
 from ..observables.transition_rates import compute_e1_transitions
 from ..physics.dfs_potential import slater_effective_charge
@@ -39,6 +48,17 @@ class PinnArtModel(nn.Module):
     perturb_eps: float = 0.2
     use_zeff_warmstart: bool = False  # R1.3: Slater Z_eff skeleton warm-start
 
+    # --- Stage A Round 2 (Laguerre basis) toggles ---
+    use_laguerre_basis: bool = False
+    K_max: int = 9
+    learn_lambda: bool = True
+    perturb_scale_P: float = 0.05
+    perturb_scale_Q: float = 0.05
+    # Analytic Laguerre init is computed per-batch inside
+    # `DeepONetDirac.__call__` from the (batched) (Z, n, l) so it follows
+    # whatever row the manifest feeds (Round-3 fix v2).  No model-level
+    # constants are needed.
+
     @nn.compact
     def __call__(
         self,
@@ -56,16 +76,6 @@ class PinnArtModel(nn.Module):
 
         branch_feat = build_branch_features(batch, n_orb_max=self.n_orb_max)
         d_in = branch_input_dim(self.n_orb_max)
-        net = DeepONetDirac(
-            d_branch=self.d_branch,
-            d_trunk=self.d_trunk,
-            n_siren_layers=self.n_siren_layers,
-            omega_0=self.omega_0,
-            n_orb_max=self.n_orb_max,
-            d_in_branch=d_in,
-            use_hydrogenic_skeleton=self.use_hydrogenic_skeleton,
-            perturb_eps=self.perturb_eps,
-        )
         kappa = batch["kappa"][:, : self.n_orb_max]
         orb_mask = batch["orb_mask"][:, : self.n_orb_max]
         Z = batch["Z"]
@@ -77,6 +87,27 @@ class PinnArtModel(nn.Module):
         else:
             n_principal = jnp.maximum(jnp.abs(kappa), 1)
             l_orbital = jnp.where(kappa < 0, -kappa - 1, kappa)
+
+        # Stage A Round 2 (Round-3 fix v2): per-batch analytic Laguerre
+        # init is computed inside `DeepONetDirac.__call__` from the
+        # (batched) (Z, n, l) — so the very first forward pass
+        # reproduces the analytic hydrogenic P for each row.
+
+        net = DeepONetDirac(
+            d_branch=self.d_branch,
+            d_trunk=self.d_trunk,
+            n_siren_layers=self.n_siren_layers,
+            omega_0=self.omega_0,
+            n_orb_max=self.n_orb_max,
+            d_in_branch=d_in,
+            use_hydrogenic_skeleton=self.use_hydrogenic_skeleton,
+            perturb_eps=self.perturb_eps,
+            use_laguerre_basis=self.use_laguerre_basis,
+            K_max=self.K_max,
+            learn_lambda=self.learn_lambda,
+            perturb_scale_P=self.perturb_scale_P,
+            perturb_scale_Q=self.perturb_scale_Q,
+        )
 
         z_eff_orb = None
         if self.use_zeff_warmstart:
@@ -116,6 +147,12 @@ class PinnArtModel(nn.Module):
             "V_csf": None,
             "H": None,
             "transitions": None,
+            # Stage A Round 2: forward Laguerre-head outputs through to
+            # the trainer (consumed by coeff_loss / q_corr_loss).
+            "laguerre_coeffs": raw.get("laguerre_coeffs"),
+            "laguerre_lambdas": raw.get("laguerre_lambdas"),
+            "laguerre_lambda_init": raw.get("laguerre_lambda_init"),
+            "laguerre_deltaQ": raw.get("laguerre_deltaQ"),
             "cross_sections": None,
         }
 
@@ -188,6 +225,11 @@ def build_model_and_params(cfg, grid: RadialGrid, key: jax.Array):
     model_cfg = getattr(cfg, "model", cfg)
     ci_cfg = getattr(cfg, "ci", None)
     coords = getattr(cfg, "coords", None)
+
+    # Stage A Round 2 (Round-3 fix v2): no model-level Laguerre init
+    # constants — `DeepONetDirac.__call__` computes the per-batch
+    # analytic init from the (batched) (Z, n, l).
+
     model = PinnArtModel(
         n_orb_max=int(getattr(model_cfg, "n_orb_max", 16)),
         n_csf_max=int(getattr(model_cfg, "n_csf_max", 32)),
@@ -205,9 +247,24 @@ def build_model_and_params(cfg, grid: RadialGrid, key: jax.Array):
         use_hydrogenic_skeleton=bool(getattr(model_cfg, "use_hydrogenic_skeleton", True)),
         perturb_eps=float(getattr(model_cfg, "perturb_eps", 0.2)),
         use_zeff_warmstart=bool(getattr(model_cfg, "use_zeff_warmstart", False)),
+        use_laguerre_basis=bool(getattr(model_cfg, "use_laguerre_basis", False)),
+        K_max=int(getattr(model_cfg, "K_max", 9)),
+        learn_lambda=bool(getattr(model_cfg, "learn_lambda", True)),
+        perturb_scale_P=float(getattr(model_cfg, "perturb_scale_P", 0.05)),
+        perturb_scale_Q=float(getattr(model_cfg, "perturb_scale_Q", 0.05)),
     )
     batch = _dummy_batch(int(getattr(model_cfg, "n_orb_max", 16)), int(getattr(model_cfg, "n_csf_max", 32)))
+    # When the Laguerre basis is on, populate the dummy shell_table with
+    # valid (n, l) for slot 0 so the analytic init has somewhere to write
+    # a non-zero value (purely a smoke-test safety net; the forward path
+    # is robust to all-zero shell_table because invalid slots are masked).
+    if getattr(model_cfg, "use_laguerre_basis", False):
+        n_orb_max = int(getattr(model_cfg, "n_orb_max", 16))
+        shell = np.zeros((batch["shell_table"].shape[0], n_orb_max, 4), dtype=np.int32)
+        shell[0, 0] = np.array([1, 0, 1, 1], dtype=np.int32)
+        batch["shell_table"] = jnp.asarray(shell, dtype=jnp.int32)
     params = model.init(key, batch, grid, train=False, return_ci=model.ci_enabled)
+
     return model, params
 
 

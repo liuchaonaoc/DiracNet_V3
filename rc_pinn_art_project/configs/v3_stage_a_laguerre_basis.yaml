@@ -1,0 +1,92 @@
+# Stage A Round 2: Differentiable Generalized-Laguerre Basis
+# (See prompts/17_generalized_laguerre_basis.md §10 R3 for rationale.)
+# Differences vs. configs/default.yaml:
+#   - model.use_laguerre_basis = true
+#   - model.K_max = 9
+#   - model.learn_lambda = true   (per-orbital, softplus-constrained)
+#   - model.perturb_scale_P / _Q = 0.05 (5% bounded SIREN corrections)
+#   - stage_a.weights.ortho = 10.0   (Gemini §II.2 warning: cross-orbital
+#     orthogonality is NOT guaranteed by the Laguerre basis when λ differs
+#     between orbitals, so the soft constraint cannot be dropped below 10.)
+#   - stage_a.weights.coeff_decay = 1e-3, lambda_prior = 1e-3,
+#     q_residual = 1.0
+
+seed: 42
+
+grid:
+  r_min: 1.0e-3
+  r_max: 50.0
+  n_grid: 256
+  scheme: loglinear
+
+coords:
+  c1: 1.0
+  c2: 1.0
+  r_eps: 1.0e-6
+  learn_map: false
+
+model:
+  n_orb_max: 16
+  n_csf_max: 8
+  d_branch: 64
+  d_trunk: 64
+  n_siren_layers: 3
+  omega_0: 15.0
+  apply_lowdin: false
+
+  # --- Stage A Round 2 (Laguerre basis) ---
+  use_laguerre_basis: true
+  K_max: 9
+  learn_lambda: true
+  perturb_scale_P: 0.05
+  perturb_scale_Q: 0.05
+
+ci:
+  enabled: false
+  k_list: [0, 1, 2]
+  M_max: 8
+  eps_degen_meV: 1.0e-3
+  racah_cache: data_cache/racah_cache_v3.npz
+  diagonal_fill: hybrid
+
+continuum:
+  enabled: false
+
+stage_a:
+  n_epochs: 2000
+  batch_size: 4
+  weights:
+    pde: 1.0
+    ortho: 10.0          # NOT 1.0 — see comment at top of file
+    asym: 0.1
+    norm: 10.0
+    v_prior: 5.0
+    v_smooth: 1.0e-6
+    coeff_decay: 1.0e-3
+    lambda_prior: 1.0e-3
+    q_residual: 1.0
+  gate:
+    cos_threshold: 0.5
+    pde_threshold: 1.0e-1
+    e_orb_meV_threshold: 500.0
+
+optimizer:
+  lr_trunk: 3.0e-4
+  lr_branch: 1.0e-4
+  weight_decay: 1.0e-4
+  grad_clip: 1.0
+
+training:
+  ckpt_dir: ./checkpoints/v3_stage_a_laguerre_basis
+  log_dir: ./logs/v3_stage_a_laguerre_basis
+  val_every_epochs: 10
+  steps_per_epoch: 5
+
+dataset:
+  manifest: data_cache/manifest_hydrogenic_v3.parquet
+  n_orb_max: 16
+  n_csf_max: 8
+
+stage_c:
+  diagonal_fill: hybrid
+  nist_inject: true

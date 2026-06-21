@@ -1,0 +1,16 @@
+# cFAC single-electron ns at Z=19, n=4
+
+SetAtom('K', 19)
+
+SetRadialGrid(400, 1.05, 10.0, 1.0e-6)
+
+Config('g', '4s1')
+
+ConfigEnergy(0)
+OptimizeRadial(['g'])
+ConfigEnergy(1)
+
+GetPotential('cf_Z19_n4_V.dat')
+WaveFuncTable('cf_Z19_n4_PQ.dat', 4, -1)
+
+Print('done: Z=19, n=4')

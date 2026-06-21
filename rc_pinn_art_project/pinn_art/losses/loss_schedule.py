@@ -9,8 +9,11 @@ def stage_a_weights(cfg) -> dict[str, float]:
         return {
             "pde": 1.0, "ortho": 100.0, "asym": 0.01, "norm": 10.0,
             "v_prior": 0.1, "v_smooth": 1e-3, "scf": 0.0,
+            "coeff_decay": 0.0, "lambda_prior": 0.0, "q_residual": 0.0,
+            "_perturb_scale_Q": 0.05,
         }
     weights = getattr(w, "weights", w)
+    model_cfg = getattr(cfg, "model", None)
     return {
         "pde": float(getattr(weights, "pde", 1.0)),
         "ortho": float(getattr(weights, "ortho", 100.0)),
@@ -19,6 +22,11 @@ def stage_a_weights(cfg) -> dict[str, float]:
         "v_prior": float(getattr(weights, "v_prior", 0.1)),
         "v_smooth": float(getattr(weights, "v_smooth", 1e-3)),
         "scf": float(getattr(weights, "scf", 0.0)),
+        # --- Stage A Round 2 (Laguerre basis) regularizers ---
+        "coeff_decay": float(getattr(weights, "coeff_decay", 0.0)),
+        "lambda_prior": float(getattr(weights, "lambda_prior", 0.0)),
+        "q_residual": float(getattr(weights, "q_residual", 0.0)),
+        "_perturb_scale_Q": float(getattr(model_cfg, "perturb_scale_Q", 0.05)),
     }
 
 

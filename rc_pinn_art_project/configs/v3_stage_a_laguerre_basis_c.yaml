@@ -1,0 +1,103 @@
+# Stage C: Differentiable Generalized-Laguerre Basis at z1_26_n10
+#
+# Step C extends the Round-3 v2 fix to a wider manifest:
+#   * Z ∈ {1, 2, ..., 26}
+#   * n ∈ {1, 2, ..., 10}
+#   * all s-orbitals (l = 0, kappa = -1)
+#
+# Differences vs. configs/v3_stage_a_laguerre_basis.yaml:
+#   * `grid.r_max = 250.0`  (H 10s radial extent ~ 2·10² + 5 = 205; +20%
+#     headroom to keep the P peak inside the grid)
+#   * `grid.n_grid = 512`  (longer grid ⇒ finer sampling at the long-range
+#     oscillations of high-n orbitals)
+#   * `dataset.manifest = data_cache/manifest_hydrogenic_z1_26_n10.parquet`
+#   * `stage_a.weights.coeff_decay = 1.0e-3`  (unchanged — 5k already
+#     converges the analytic Laguerre expansion nicely)
+#   * `stage_a.weights.lambda_prior = 1.0e-1`  (10× tighter anchor after
+#     the first run showed λ drift to 3–8% on high-n orbitals; the SIREN
+#     trunk alone cannot represent the full 100× spread in λ = Z/n)
+#   * `model.d_trunk = 128`  (was 64; high-n orbitals need more trunk
+#     capacity to keep the radial oscillation phase correct out to r ~ 100)
+#   * `stage_a.batch_size = 8`  (more rows per step: each manifest row is
+#     a single-orbital hydrogenic state, so a larger batch is cheap and
+#     reduces stochastic noise)
+
+seed: 42
+
+grid:
+  r_min: 1.0e-3
+  r_max: 250.0
+  n_grid: 512
+  scheme: loglinear
+
+coords:
+  c1: 1.0
+  c2: 1.0
+  r_eps: 1.0e-6
+  learn_map: false
+
+model:
+  n_orb_max: 16
+  n_csf_max: 8
+  d_branch: 64
+  d_trunk: 128
+  n_siren_layers: 3
+  omega_0: 15.0
+  apply_lowdin: false
+
+  # --- Stage A Round 2 (Laguerre basis) ---
+  use_laguerre_basis: true
+  K_max: 9
+  learn_lambda: true
+  perturb_scale_P: 0.05
+  perturb_scale_Q: 0.05
+
+ci:
+  enabled: false
+  k_list: [0, 1, 2]
+  M_max: 8
+  eps_degen_meV: 1.0e-3
+  racah_cache: data_cache/racah_cache_v3.npz
+  diagonal_fill: hybrid
+
+continuum:
+  enabled: false
+
+stage_a:
+  n_epochs: 5000
+  batch_size: 8
+  weights:
+    pde: 1.0
+    ortho: 10.0          # NOT 1.0 — see comment at top of file
+    asym: 0.1
+    norm: 10.0
+    v_prior: 5.0
+    v_smooth: 1.0e-6
+    coeff_decay: 1.0e-3
+    lambda_prior: 1.0e-1
+    q_residual: 1.0
+  gate:
+    cos_threshold: 0.5
+    pde_threshold: 1.0e-1
+    e_orb_meV_threshold: 500.0
+
+optimizer:
+  lr_trunk: 3.0e-4
+  lr_branch: 1.0e-4
+  weight_decay: 1.0e-4
+  grad_clip: 1.0
+
+training:
+  ckpt_dir: ./checkpoints/v3_stage_a_laguerre_basis_c
+  log_dir: ./logs/v3_stage_a_laguerre_basis_c
+  val_every_epochs: 10
+  steps_per_epoch: 5
+
+dataset:
+  manifest: data_cache/manifest_hydrogenic_z1_26_n10.parquet
+  n_orb_max: 16
+  n_csf_max: 8
+
+stage_c:
+  diagonal_fill: hybrid
+  nist_inject: true

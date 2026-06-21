@@ -41,3 +41,26 @@ def test_ortho_reduces_overlap(r_grid, rng_key):
     )
     assert abs(after) < abs(before)
     assert abs(after) < 1e-3
+
+
+def test_gram_schmidt_orthonormal(r_grid):
+    """Gram-Schmidt orthonormalizer must normalize each orbital AND collapse
+    pairwise overlap to ~0 (Stage A Round 2 §2.6 hard-constraint test)."""
+    from pinn_art.physics.orthogonalizer import gram_schmidt_ortho_pq
+
+    B, Ng = 1, r_grid.n_grid
+    t = jnp.linspace(0.1, 1.0, Ng)
+    P1 = jnp.sin(t * 1.3)[None, None, :]
+    P2 = jnp.cos(t * 0.7 + 0.1)[None, None, :]
+    P = jnp.concatenate([P1, P2], axis=1)
+    Q = P * 0.05
+    mask = jnp.array([[True, True]])
+    out = gram_schmidt_ortho_pq(P, Q, r_grid, mask)
+    n0 = float(r_grid.integrate(out["P"][:, 0] ** 2 + out["Q"][:, 0] ** 2, axis=-1)[0])
+    n1 = float(r_grid.integrate(out["P"][:, 1] ** 2 + out["Q"][:, 1] ** 2, axis=-1)[0])
+    assert abs(n0 - 1.0) < 1e-3
+    assert abs(n1 - 1.0) < 1e-3
+    overlap = float(r_grid.integrate(
+        out["P"][:, 0] * out["P"][:, 1] + out["Q"][:, 0] * out["Q"][:, 1], axis=-1
+    )[0])
+    assert abs(overlap) < 1e-3

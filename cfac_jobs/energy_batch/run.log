@@ -1,0 +1,13 @@
+run_Z1_to_Z10_batch.sh: line 18: 2374225 Trace/breakpoint trap   (core dumped) sfac "$SF" > "logs/cf_Z${Z}_n${N}.log" 2>&1
+[FAIL] cf_Z1_n5.sf
+run_Z1_to_Z10_batch.sh: line 18: 2374229 Trace/breakpoint trap   (core dumped) sfac "$SF" > "logs/cf_Z${Z}_n${N}.log" 2>&1
+[FAIL] cf_Z1_n6.sf
+run_Z1_to_Z10_batch.sh: line 18: 2374242 Trace/breakpoint trap   (core dumped) sfac "$SF" > "logs/cf_Z${Z}_n${N}.log" 2>&1
+[FAIL] cf_Z1_n7.sf
+run_Z1_to_Z10_batch.sh: line 18: 2374245 Trace/breakpoint trap   (core dumped) sfac "$SF" > "logs/cf_Z${Z}_n${N}.log" 2>&1
+[FAIL] cf_Z1_n8.sf
+run_Z1_to_Z10_batch.sh: line 18: 2374254 Trace/breakpoint trap   (core dumped) sfac "$SF" > "logs/cf_Z${Z}_n${N}.log" 2>&1
+[FAIL] cf_Z1_n9.sf
+run_Z1_to_Z10_batch.sh: line 18: 2374263 Trace/breakpoint trap   (core dumped) sfac "$SF" > "logs/cf_Z${Z}_n${N}.log" 2>&1
+[FAIL] cf_Z1_n10.sf
+[batch done]

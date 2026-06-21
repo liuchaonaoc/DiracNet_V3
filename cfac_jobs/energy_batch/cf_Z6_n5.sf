@@ -1,0 +1,17 @@
+# cFAC job: mid-Z high-n  C 5s   (Z=6, n=5, l=0)
+
+SetAtom('C', 6)
+
+# 5s extent ~ 25/6 ~ 4 a.u.
+SetRadialGrid(600, 1.05, 10.0, 1.0e-6)
+
+Config('g', '5s1')
+
+ConfigEnergy(0)
+OptimizeRadial(['g'])
+ConfigEnergy(1)
+
+GetPotential('cf_Z6_n5_V.dat')
+WaveFuncTable('cf_Z6_n5_PQ.dat', 5, -1)
+
+Print('done: Z=6, n=5')

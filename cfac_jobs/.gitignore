@@ -1,0 +1,6 @@
+# cFAC batch run logs (transient stderr/stdout from `sfac` invocations)
+# Written by gen_cfac_batch.sh into <Z>/logs/.  These are not source.
+**/logs/
+
+# Top-level run.log produced by the batch launcher
+/run.log
