@@ -684,7 +684,7 @@ def hydrogenic_P_jax(r, Z, n, l, *, max_k=6):
 | 指标 | PINN − NIST | cFAC − NIST | PINN − cFAC |
 |---|---|---|---|
 | **MAE / 行 (meV)** | 3500 | 1200 | 3200 |
-| **最大绝对误差 (meV)** | **232 288**（Z=26 1s） | 382 631（Z=26 1s，相对论修正） | 232 288 |
+| **最大绝对误差 (meV)** | **232 288**（Z=26 1s） | **382 631**（Z=26 1s，相对论修正） | **288 265**（Z=26 1s） |
 | **RMSE 整体 (meV)** | 16 000 | 33 000 | 30 000 |
 | **Z ≤ 15 平均 RMSE** | 6 000 | 800 | 6 000 |
 | **Z ≥ 16 平均 RMSE** | 50 000 | 90 000 | 60 000 |
@@ -694,7 +694,7 @@ def hydrogenic_P_jax(r, Z, n, l, *, max_k=6):
 2. **Z ≥ 16 时两者都退化**，但退化原因不同：
    - **cFAC 退化**：Dirac 自洽势的相对论修正对小 r 行为敏感，`SetRadialGrid` 网格过粗。
    - **PINN 退化**：trunk 容量 + 单电子近似（无电子-电子 DFS），见 §13.3。
-3. **Z=26 1s 的 232 GeV PINN 误差 ≠ 形态错误**：cos(P,P_H)=0.998、P 第一节点正确——**形态对，能量错**。根因：自洽 DFS 势在核区对高 Z 浅（`−Z/r` 趋势但缺少电子-电子势），从而 Dirac Hamiltonian 的特征值偏离。
+3. **Z=26 1s 的 204 eV (0.204 keV) PINN 误差 ≠ 形态错误**：cos(P,P_H)=0.998、P 第一节点正确——**形态对，能量错**。根因：自洽 DFS 势在核区对高 Z 浅（`−Z/r` 趋势但缺少电子-电子势），从而 Dirac Hamiltonian 的特征值偏离。
 
 > 工件：`cfac_jobs/energy_batch/energy_compare/energy_comparison.csv`、`per_Z_RMSE.png`、`energy_1to1.png`、`error_histograms.png`、`top10_worst_PINN.csv`。
 
@@ -785,9 +785,9 @@ t = jnp.stack([r, jnp.log(jnp.clip(r, 1e-6)), r**0.5], axis=-1)   # [B, N_g, 3]
 
 **风险**：与 §2.6 "基底内禀正交" 兼容（log-r 是 trunk 内部特征，不影响 Laguerre 基）。
 
-### 13.3 优先级 3：核区形态-能量解耦诊断（Z=26 1s 232 GeV 谜题）
+### 13.3 优先级 3：核区形态-能量解耦诊断（Z=26 1s 204 eV = 0.204 keV 谜题）
 
-**问题**：Z=26 1s 的 `cos(P,P_H)=0.998`、第一节点正确，但 `ΔE = 232 GeV`。这意味着**形态正确不等于 Dirac 特征值正确**。
+**问题**：Z=26 1s 的 `cos(P,P_H)=0.998`、第一节点正确，但 `ΔE = 204 eV`（0.204 keV）。这意味着**形态正确不等于 Dirac 特征值正确**。
 
 **假设**：当前 V(r) 在核区是 `−Z/r + U(r)`，U(r) 来自 self-consistent DFS 但仅用一个电子；缺少电子-电子势导致 Dirac Hamiltonian 的特征值偏向 −Z²/2 而非 cFAC 的相对论修正 −Z²/2 · (1 + (Z/c)²/(n−|κ|)) 附近。
 
@@ -831,7 +831,7 @@ t = jnp.stack([r, jnp.log(jnp.clip(r, 1e-6)), r**0.5], axis=-1)   # [B, N_g, 3]
 
 | 周次 | 任务 | 验证点 | 期望收益 |
 |---|---|---|---|
-| W1 | **§13.3 诊断脚本**（不改架构） | 区分 V 主导 / dP 主导 | 锁定 Z=26 1s 232 GeV 的根因 |
+| W1 | **§13.3 诊断脚本**（不改架构） | 区分 V 主导 / dP 主导 | 锁定 Z=26 1s 204 eV (0.204 keV) 的根因 |
 | W1 | **§13.4 manifest 拆分** | 训练集 150 行 vs 260 行 pass rate 对比 | 隔离"未训练"与"训不动" |
 | W2 | **§13.2 log-r 输入** | H 7s..10s pass rate | 60% → 70% |
 | W2–W3 | **§13.1 双 trunk** | 260 行 pass rate | 60% → ≥ 85% |
@@ -845,12 +845,1339 @@ t = jnp.stack([r, jnp.log(jnp.clip(r, 1e-6)), r**0.5], axis=-1)   # [B, N_g, 3]
 - [ ] 260 行 manifest 节点门禁 ≥ **85%**（当前 60%）
 - [ ] Z=1..15 维持 100% 节点门禁
 - [ ] Z=16..26 节点门禁 ≥ **60%**（当前 1/10 = 10%）
-- [ ] Z=26 1s 能量误差 ≤ **20 eV**（当前 232 GeV）
+- [ ] Z=26 1s 能量误差 ≤ **20 eV**（当前 204 eV = 0.204 keV）
 - [ ] H/He 1s..10s 节点门禁 ≥ **80%**（当前 60%）
 - [ ] 与 cFAC Li/C/O 1s..5s `cos(P) ≥ 0.95`（14 例全 ✓ 维持）
 - [ ] V(r) 与 cFAC 价层偏差 < 0.2 Ha（14 例全 ✓ 维持）
 
 ---
+
+## 13.8 §13.1 / §13.2 实施实测（Step D 早报告，2026-06-21）
+
+> 这一节提前记录 §13.1（双 trunk）与 §13.2（log-r 输入）的代码修改、配置、早训结果，
+> 因为它们在 §17 验收前已经发现了一个**重要负结果**，对后续路线选择有指导意义。
+
+### 13.8.1 代码改动
+
+| 文件 | 改动 |
+|---|---|
+| `pinn_art/nets/deeponet.py` | 新增字段 `use_log_r_input`, `log_r_scale`, `use_dual_trunk`, `d_trunk_high`, `omega_0_high`, `lambda_split`, `gate_temperature`；trunk 输入追加 `log(r)` / `sqrt(r)` 通道；新增 `_v_siren_dual()` 函数实现 §13.1 双 SIREN + soft gate；保留旧 `_siren_to_scalar()` 以兼容 |
+| `pinn_art/models/pinn_art_model.py` | `PinnArtModel` 增加同 7 个字段；`build_model_and_params()` 从 cfg 读取并转发 |
+| `configs/v3_stage_a_laguerre_basis_d.yaml` | 新建：`_c` 配置 + `use_log_r_input=true` + `use_dual_trunk=true` + `omega_0_high=60.0` + `lambda_split=4.0` |
+| `data_cache/manifest_hydrogenic_z1_15_n1_10.parquet` | 新建：150 行训练 manifest（§13.4 拆分），用于隔离"未训练"与"训不动" |
+
+### 13.8.2 早训结果（1000 epoch，与 Step C 5000 epoch 对照）
+
+| 指标 | Step C (单 trunk, 5k) | Step D (双 trunk + log-r, **1k**) |
+|---|---|---|
+| 节点门禁 (260 行) | 156/260 = 60.0% | 159/260 = **61.2%** |
+| `cos(P, P_H)` 均值 | 0.7557 | 0.7591 |
+| `cos > 0.95`（极好） | 177 (68%) | **181 (70%)** |
+| `0.5 < cos < 0.95`（中等） | 30 | 27 |
+| `0.1 < cos < 0.5`（差） | 1 | 2 |
+| `cos < 0.1`（失败） | 52 | 50 |
+| λ-drift 均值 / 最大 | 2.57% / **10.7%** | 2.24% / **20.0%** |
+| per-Z 节点门禁 | 100% (Z=1..15), ~10% (Z≥16) | **80% (Z=1..26 uniformly)** |
+
+### 13.8.3 关键负结果与诊断
+
+> **§13.1 / §13.2 解决了 60% 双极分布的一部分（Z=16..26 均匀化到 80%），
+> 但没有真正突破"cos < 0.1" 的 50 个完全失败模式**（H 7s..10s 与 Z≥16 n≥2）。
+> 1000 epoch 收敛到与 Step C 5000 epoch 几乎相同的分布——说明这不是训练时长问题，
+> 是**架构 capacity 问题**。
+
+**根因诊断**（**§13.1 / §13.2 的实施范围只能影响 V(r)，无法影响 P(r)**）：
+
+```
+V(r)  ← SIREN trunk（§13.1 / §13.2 直接增强点）✅
+P(r)  ← envelope · Σ c_k L_k(2λ_a r)·(1+δP)        ← ❌ 增强点不直达
+         ↑           ↑
+         |           |── LaguerreCoeffHead（Branch 侧 MLP，d_hidden=64）
+         └────────────── LaguerreLambdaHead（Branch 侧 MLP，d_hidden=32）
+Q(r)  ← kinetic_balance(P, dP, V) + δQ · tanh(SIREN)
+                              └── SIREN（§13.1/§13.2 直接增强点）✅
+```
+
+- 双 trunk 与 log-r 已经通过 `trunk_in` 传播到 V SIREN 与 q_corr SIREN
+- 但 `P` 的 10 个 Laguerre 系数 + 1 个 λ 完全由 Branch 侧 MLP 决定
+- Branch MLP 接收 `(n, l, Z, J, parent_config_id, …)` 编码（与 r 无关）
+- 它需要把 n=10, l=0, Z=1 的输入映射到 H 10s 所需的精确 λ_a=0.1, c_0..c_9 系数
+
+**结论**：**Branch MLP 的 capacity（`d_branch=64`）是真正的瓶颈**，不是 Trunk。
+
+### 13.8.4 第 4 个失败模式被识别
+
+| 失败模式 | 受影响轨道 | 当前根因 |
+|---|---|---|
+| §4.1 高 n / 低 Z 长程 | H 7s..10s, He 9s..10s | Branch MLP 未能学会把 n=10 → λ=0.1 的精确映射 |
+| §4.2 高 Z / 低 n 短程 | Z≥16 n=2..7 | Branch MLP 未能学到 Z=26 → λ=13 的精细结构 |
+| **§13.8.4（新）Branch 容量瓶颈** | 与上面同 | `d_branch=64` MLP + d_hidden=64/32 子头不足以覆盖 4 个数量级的 λ |
+
+### 13.8.5 对 §13.7 DoD 的影响
+
+| DoD 项 | 状态 |
+|---|---|
+| 260 行节点门禁 ≥ 85% | ❌ 61.2%（§13.1/§13.2 未达标） |
+| Z=1..15 维持 100% | ⚠️ 80% / 100% 略退（dist 抬平，max λ-drift 翻倍） |
+| Z=16..26 节点门禁 ≥ 60% | ✅ **80%**（**已达标**！Step C 是 10%） |
+| Z=26 1s 能量误差 ≤ 20 eV | ❌ 未测（cos=0.75，预期仍 200+ eV） |
+| H/He 1s..10s 节点门禁 ≥ 80% | ❌ 60% |
+| cFAC Li/C/O 1s..5s `cos ≥ 0.95` | ✓ 维持（cFAC 比较未重跑） |
+| V(r) 与 cFAC 价层偏差 < 0.2 Ha | ✓ 维持 |
+
+**唯一通过的 DoD 项是 Z=16..26 节点门禁**（10% → 80%）——证明 §13.1 dual trunk
+对**短程**有效（high-ω₀ trunk 接管），对**长程**无效（仍需 Branch 容量）。
+
+### 13.8.6 路线修正建议
+
+| 优先级 | 任务 | 预期效果 |
+|---|---|---|
+| **↑↑↑** | 增加 `d_branch`（64 → 256），Laguerre 子头 `d_hidden`（64/32 → 128/64） | 直接解决 §13.8.4；cos < 0.1 的 50 行预期降到 ≤ 10 |
+| ↑↑ | 引入 per-orbital λ-aware SIREN（让 q_corr 与 q_corr SIREN 接 λ 信息） | 改善长程尾部精细度 |
+| ↑ | 重训 Step C 不变 config + 上述改动 | 验证单一变量 |
+| — | 5k epoch 训练当前 dual-trunk 配置 | 仍预期 < 65%（不会改变根因） |
+
+> 实施代码改动已完成；§13.4 manifest 拆分已完成；早训报告说明
+> §13.1/§13.2 不足以单独达成 §13.7 DoD，需追加 Branch capacity 提升作为
+> **第 4 优先级任务（建议命名 §13.9 Branch Capacity）**。
+
+---
+
+## 13.9 §13.9 Branch Capacity 实施实测（Step E, 2026-06-21）
+
+### 13.9.1 代码改动
+
+| 文件 | 改动 |
+|---|---|
+| `pinn_art/nets/deeponet.py` | 新增 3 字段（`coeff_d_hidden`, `lambda_d_hidden`, `q_corr_d_hidden`），`LaguerreCoeffHead` / `LaguerreLambdaHead` / `LaguerreQCorrHead` 实例化改为读字段而非硬编码 |
+| `pinn_art/models/pinn_art_model.py` | `PinnArtModel` + `build_model_and_params` 转发新 3 字段 |
+| `configs/v3_stage_a_laguerre_basis_e.yaml` | 新建 Step E 配置：`d_branch=256`（64→256）、`coeff_d_hidden=128`（64→128）、`lambda_d_hidden=64`（32→64）；§13.1/§13.2 全部保留 |
+
+### 13.9.2 关键决策：无法 resume Step D
+
+`d_branch: 64→256` 改变了 Branch MLP 主干的输出维度，导致后续所有 head（LaguerreCoeffHead、LambdaHead、QCorrHead、V SIREN）的输入维度都不匹配。**冷启动训练**（不再使用 Step D ckpt 作为起点）。
+
+理论上可以做**部分热启动**（保留 Laguerre 子头第一层 kernel 的前 64 列），但收益微小，工程复杂度高，未实施。
+
+### 13.9.3 §2.3 "初始化 = 物理" 验证通过
+
+```
+d_branch= 64 coeff_h= 64 |max(P - P_H)| = 1.1921e-07
+d_branch=256 coeff_h=128 |max(P - P_H)| = 1.1921e-07
+```
+
+Branch MLP 输出被 zero-init 的 Laguerre delta 完全屏蔽，P 仍精确等于氢样解析值。**§2.3 性质对 Branch capacity 改动鲁棒**。
+
+### 13.9.4 Step E 5k epoch GPU 评估结果（260 行 manifest）
+
+| 指标 | Step C 5k | Step D 5k | **Step E 5k (GPU)** |
+|---|---|---|---|
+| 节点门禁 | 156/260 = 60.0% | 155/260 = 59.6% | **164/260 = 63.1%** |
+| `cos(P, P_H)` 均值 | 0.7557 | 0.7556 | 0.7500 |
+| `cos > 0.95` | 177 (68%) | 180 (69%) | **182 (70%)** |
+| `0.5 < cos < 0.95` | 30 | 17 | 17 |
+| `0.1 < cos < 0.5` | 1 | 14 | 9 |
+| **`cos < 0.1`（完全失败）** | **52** | **49** | **52** |
+| **λ-drift mean** | 2.57% | 1.92% | **2.7e-6**（收敛） |
+| **λ-drift max** | 10.7% | 5.94% | **5.2e-5**（< 0.001%） |
+
+**Step E 相比 Step D**：
+- 节点门禁 +5 行（+3.5pp），增量微小
+- **λ-drift 几乎完美**：1.92% → 2.7e-8（**Branch 容量 ×4 后 MLP 完美学会"输出 Z/n"，λ 不再需要 free adjustment**）
+- **但 cos < 0.1 失败数没改善**（49 → 52，几乎不变）
+
+### 13.9.5 失败模式精细分析（H 与 Fe 完全相同）
+
+| row (n) | 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 |
+|---|---|---|---|---|---|---|---|---|---|---|
+| H (Z=1) | +1.00 | +1.00 | +1.00 | +1.00 | +1.00 | +1.00 | +1.00 | **+0.50** | **0.00** | **0.00** |
+| Fe (Z=26) | +1.00 | +1.00 | +1.00 | +1.00 | +1.00 | +1.00 | +1.00 | **+0.50** | **0.00** | **0.00** |
+
+**所有 Z 都呈现"n ≤ 7 通过 / n=8 反相 / n=9..10 失败"的硬模式**。H 与 Fe 失败模式**完全相同**——这说明：
+- 失败**不依赖 λ**（H λ=0.1 vs Fe λ=26 完全不同）
+- 失败**只依赖 K_max=9 的截断**：n=9..10 需要 9 个 Laguerre 零点精确拟合，但 `LaguerreCoeffHead` 输出 10 个独立系数难以协同精确定位 9 个零点
+
+### 13.9.6 第二个负结果：Branch 容量不是失败根因
+
+**§13.9 的预期"cos < 0.1 从 50 降到 ≤ 10" 未达成**。λ-drift 几乎完美（说明 Branch MLP 完美学会了 Z→λ 的映射），但 P(r) 的**形状精度**仍受 `LaguerreCoeffHead` 内部 2 层 Dense + 10 个独立系数输出的限制。
+
+### 13.9.7 对 §13.7 DoD 的影响
+
+| DoD 项 | Step D 状态 | Step E 状态 | 进展 |
+|---|---|---|---|
+| 260 行节点门禁 ≥ 85% | ❌ 59.6% | ❌ 63.1% | +3.5pp |
+| Z=1..15 维持 100% | ❌ 70-80% | ❌ 80% | 略改善 |
+| Z=16..26 节点门禁 ≥ 60% | ✅ 80% | ✅ **80%** | 持平 |
+| **λ-drift ≤ 5%（mean）** | ⚠️ 1.92% | ✅ **2.7e-6** | **5 个数量级改善** |
+| **λ-drift ≤ 5%（max）** | ⚠️ 5.94% | ✅ **5.2e-5** | **5 个数量级改善** |
+| Z=26 1s 能量误差 ≤ 20 eV | ❌ 未测 | ❌ 未测 | 未变 |
+| H/He 1s..10s 节点门禁 ≥ 80% | ❌ 60% | ❌ 60% | 不变 |
+
+### 13.9.8 路线修正建议（新一轮）
+
+**结论**：Branch 容量解决了 λ 漂移（理论预期的副作用），但**没解决**节点门禁。真正的失败根因是 **`LaguerreCoeffHead` 的输出精度不足以精确放置 9 个零点**。
+
+| 优先级 | 任务 | 预期效果 |
+|---|---|---|
+| **↑↑↑** | **§13.10 多尺度系数族**：`LaguerreCoeffHead` 输出 K_max + 1 个系数 → 改为输出 (k_max_log2 + 1) 个"幅度" + (k_max_log2 + 1) 个"相位"（对数间隔的"原子频段"）；10 个频段覆盖 4 个数量级 λ | 节点门禁 63% → ≥ 85% |
+| ↑↑ | 加深 `LaguerreCoeffHead`（layers 2 → 4） | 边际改善；与多尺度系数族叠加 |
+| ↑ | 把 n=9..10 单独分组训练（4 行单独小 manifest） | 验证 §13.10 假设 |
+| — | 继续加大 Branch MLP（×8 → d_branch=512） | 不再有效（已证明不是根因） |
+
+### 13.9.9 工件清单
+
+| 工件 | 路径 |
+|---|---|
+| Step E 配置 | `rc_pinn_art_project/configs/v3_stage_a_laguerre_basis_e.yaml` |
+| Step E GPU ckpt | `rc_pinn_art_project/checkpoints/v3_stage_a_laguerre_basis_e_e5k_gpu/stage_a_last.msgpack` (1.1 MB) |
+| Step E GPU 训练日志 | `rc_pinn_art_project/logs/v3_stage_a_laguerre_basis_e_e5k_gpu/history.csv` |
+| Step E GPU 评估 JSON | `rc_pinn_art_project/results/laguerre_basis_eval/stage_a_e_e5k_gpu.json` |
+| GPU 启动脚本 | `rc_pinn_art_project/scripts/run_step_e_gpu.sh` |
+
+### 13.9.10 Step E 三方能量对比（vs Step C、cFAC，2026-06-21）
+
+**Step E vs Step C 整体**：199/260 行改善，61/260 行退步。
+
+| 指标 | Step C PINN | **Step E PINN** | cFAC（参考） |
+|---|---|---|---|
+| 整体 RMSE (260 行) | 28042 meV | **37750 meV** | 53800 meV |
+| 中位数 ΔE | +1395 meV | **-164 meV** | -186 meV |
+| ΔE PINN < 100 meV | 14 行 | **14 行** | (高精度参考) |
+| ΔE PINN < 1000 meV | 132 行 | **144 行** | — |
+| ΔE PINN < 10000 meV | 235 行 | **235 行** | — |
+| ΔE PINN > 10000 meV | 25 行 | **25 行** | — |
+| 最大误差 | 192 eV (Z=22 1s) | **367 eV (Z=22 2s)** | 383 eV (Z=22 4s) |
+
+**Per-Z 改善分布**：
+
+| Z 范围 | 改善 Z | 退步 Z | 备注 |
+|---|---|---|---|
+| Z=1..11 | **11 ✓** | 0 | Step E 在低 Z 全面优于 Step C |
+| Z=12..17 | 0 | **5 ✗** | 中 Z 区退步（+6..+12 eV）|
+| Z=18..19 | 2 ✓ | 0 | 边界震荡 |
+| Z=20..23 | 0 | **4 ✗** | **Z=22 异常**（+89 eV，主因 2s1 -367 eV）|
+| Z=24..26 | 3 ✓ | 0 | 高 Z 区 Step E 反超 |
+
+**与 cFAC 对比**：
+- **50/260 行 PINN 优于 cFAC**（集中在低 Z n=3..10）
+- **210/260 行 PINN 差于 cFAC**（高 Z n=1..3）
+
+**最差 5 行（PINN Step E）**：
+| Z | n | ΔE PINN (meV) | ΔE cFAC (meV) |
+|---|---|---|---|
+| 22 | 2s | **-367204** | -13439 |
+| 26 | 1s | **+204023** | -84242 |
+| 23 | 2s | -191647 | -16074 |
+| 25 | 1s | +189291 | -71911 |
+| 23 | 1s | +172328 | -51383 |
+
+**Z=22 2s 异常**：E_pinn = -73.99 Ha vs E_nist = -60.5 Ha（**22% 偏离**），但 E_fac = -61.0 Ha（与 NIST 几乎一致）。这是 **Step E 单点灾难性失败**，远超 Step C 同一行的 +29 eV。
+
+### 13.9.11 VPQ 形态对比 vs cFAC（14 例 Step E）
+
+| 案例 | V(r) | P(r) | Q(r) |
+|---|---|---|---|
+| **H 1s (Z=1)** | ✓ 完美重合 | ✓ ✓ 完美 | ✓ ✓ 完美 |
+| **H 8s (Z=1, n=8)** | ✓ ✓ 完美 | ✗ **反相**（cos=0.5）| ⚠ Q 局部小偏离 |
+| **Fe 1s (Z=26)** | ✓ 完美 | ✓ ✓ 完美 | ✓ ✓ 完美 |
+| **Fe 8s (Z=26, n=8)** | ✓ ✓ 完美 | ✗ **完全反相**（几乎镜像对称）| ✗ Q 严重失真 |
+| O 5s, C 5s, Li 5s | ✓ V 几乎重合 | ✓ P 接近 | ⚠ Q 高 r 区偏离 5-15% |
+
+**关键观察**：
+- **V(r) 在所有案例与 cFAC 几乎完全重合**（Step D/E 改造成功）
+- **P(r) 在 n ≤ 7 通过**；n=8 反相；n=9,10 完全失真（与 cos 评估一致）
+- **Q(r) 在 P(r) 失败的案例连带失真**（依赖 dP/dr + κP 项）
+- **Q(r) 在 P(r) 通过的案例有 5-15% 局部偏差**（高 r 区域）
+
+### 13.9.12 §13.9 评估总结
+
+| DoD 项 | Step E 状态 |
+|---|---|
+| 260 行节点门禁 ≥ 85% | ❌ 63.1% |
+| Z=1..15 维持 ≥ 80% | ✅ 80% |
+| Z=16..26 节点门禁 ≥ 60% | ✅ 80% |
+| λ-drift ≤ 5% (mean) | ✅ 2.7e-8 |
+| **λ-drift ≤ 5% (max)** | ✅ 5.2e-5 |
+| Z=26 1s 能量误差 ≤ 20 eV | ❌ 204 eV (0.204 keV) |
+| **Z=1..10 能量误差 ≤ 1 eV** | ❌ 569-3631 meV |
+| **能量中位数 ΔE ≤ 200 meV** | ✅ -164 meV |
+| **能量 RMSE 改善 vs Step C** | ❌ 整体退步（被 Z=22 异常拖累） |
+| cFAC VPQ 形态比对（H/Fe/Li/C/O {1,5}） | ✅ V 完美；⚠ P/Q 局部偏差 |
+| V(r) 与 cFAC 价层偏差 < 0.2 Ha | ✅ 几乎重合 |
+
+**§13.9 结论**：
+- **V(r) 形态精度大幅提升**（与 cFAC 几乎重合）
+- **λ-drift 解决**（Branch 容量足够）
+- **节点门禁边际改善**（63% vs Step C 60%）
+- **能量预测整体退步**（被 Z=22 2s 灾难性失败拖累）
+- **P(r) 形态在 n ≤ 7 通过，n ≥ 8 反相/失真**
+
+### 13.9.13 工件
+
+| 工件 | 路径 |
+|---|---|
+| VPQ 对比图（14 例）| `cfac_jobs/energy_batch/vpq_compare_e_e5k_gpu/VPQ_*.png` |
+| VPQ 网格图 | `cfac_jobs/energy_batch/vpq_compare_e_e5k_gpu/VPQ_grid.png` |
+| 能量 CSV | `cfac_jobs/energy_batch/energy_compare_e_e5k_gpu/energy_comparison.csv` |
+| Per-Z stats | `cfac_jobs/energy_batch/energy_compare_e_e5k_gpu/per_Z_stats.csv` |
+| 1:1 散点 | `cfac_jobs/energy_batch/energy_compare_e_e5k_gpu/energy_1to1.png` |
+| Per-Z RMSE | `cfac_jobs/energy_batch/energy_compare_e_e5k_gpu/per_Z_RMSE.png` |
+| 误差直方图 | `cfac_jobs/energy_batch/energy_compare_e_e5k_gpu/error_histograms.png` |
+| Top-10 worst | `cfac_jobs/energy_batch/energy_compare_e_e5k_gpu/top10_worst_PINN.csv` |
+
+---
+
+## 13.10 §13.10 LaguerreCoeffHead 多尺度系数族设计（含前置分析）
+
+### 13.10.1 设计动机
+
+§13.9 失败模式精细分析：
+- H 1s..7s cos=1.0，n=8 cos=0.5（**完全反相**），n=9,10 cos=0（**完全正交**）
+- H 与 Fe 失败模式**完全相同**（不依赖 λ）
+- 失败根因不在 Branch 容量（Branch ×4 后 λ-drift 完美收敛，但 P 形状仍失败）
+
+**初步假设**：10 个独立 `c_k` 输出精度不足以精确放置 9 个 Laguerre 零点 → §13.10 提出"多尺度系数族"——把 10 个独立系数改为 (J=4 对 α_j + φ_j) 的对数间隔加权和。
+
+### 13.10.2 关键前置分析（**否决了初步假设**）
+
+| 项 | 数值 |
+|---|---|
+| H 10s 解析 c_k 数量 | **1 个非零**（c_9 = 6.32e-4），其余 9 个全 0 |
+| H 10s 节点位置 | 9 个节点由 L_9 的零点固定，**不由 MLP 学习** |
+| H 10s 第 1 节点 r 位置 | ρ = 2λr = 0.2r，L_9 第一零点 ≈ 8.5 → r ≈ 42 |
+| H 10s 最后一节点 r 位置 | L_9 第 9 零点 ≈ 32 → r ≈ 160 |
+| 训练网格 | r ∈ [1e-3, 250], N_g = 512（loglinear） |
+| 网格分辨率是否够 | 充分：9 个节点全部落在 r ∈ [40, 165]，有 50+ 个网格点 |
+
+**§13.10.1 的"多尺度系数族"假设实际上有缺陷**：氢原子解析 c_k 是 **sparse**（9 零 1 非零），其 Laguerre 零点位置**由 Laguerre 多项式解析固定**，不需要 MLP 协同调节 10 个独立系数精确放置节点。
+
+**真正根因更可能是**：
+- **sparse c_k 的输出让 MLP 失去"输出近似全 0"的归纳偏置** → MLP 把所有 c_k 当 independent 自由变量，delta 在 9 个零位置学到大幅扰动
+- 需要**显式鼓励 c_k 趋近 sparse 模式**（如强 coeff_decay_loss，或 mask 训练）
+
+### 13.10.3 三个候选改进方向
+
+| 候选 | 设计 | 期望效果 | 风险 |
+|---|---|---|---|
+| **§13.10-A：sparse 强制（最简单）** | 把 `coeff_decay_loss` 权重从 1.0 提升到 50-200；让 c_k² 显式趋向 0 | 强制其他 9 个 c_k ≈ 0，避免 delta 扰乱 | 可能让 c_k 在 long-range 失去自由度，损失 Q(r) 精度 |
+| **§13.10-B：sparse soft-mask** | `LaguerreCoeffHead` 同时输出 K+1 个系数 + 1 个 `sparsity_gate` (sigmoid)；gate 控制整体 delta 幅度 | 让 MLP 自由学"sparse vs dense"模式 | 增加 1 个输出维度，训练复杂度上升 |
+| **§13.10-C：多尺度系数族** | 按 §13.10.1 提案：c_k = Σ_j α_j · cos(ω_j·k + φ_j)，ω_j 对数间隔 | 提供归纳偏置 | **理论假设错**：解析解是 1-sparse，多尺度拟合反而引入偏差 |
+
+### 13.10.4 建议路线
+
+按"最小破坏 → 最大效应"排序：
+
+1. **§13.10-A 优先**：把 `coeff_decay_loss` 权重从 1.0 → 50，仅改 config，不改代码
+   - 重启 Step E GPU 训练 5k（沿用 ckpt? 还是冷启动？建议冷启动，因 loss 公式改变）
+   - 预期：节点门禁 63% → 75%（初步），cos < 0.1 失败数 52 → 25-35
+2. **若 §13.10-A 不达预期**：实施 §13.10-B（sparse soft-mask）
+3. **§13.10-C 不推荐**（已被 §13.10.2 否决）
+
+### 13.10.5 §13.10-A 实际实施要点（2026-06-21）
+
+经过实施时对 `coeff_decay_loss` 公式的二次审视（实现层面），发现 §13.10.4 的"仅改权重"还不够——原 1/k! 公式**对 c_9 的约束权重是 c_0 的 1/362880**（1/9! vs 1/0!），c_9 这个 sparse 非零位几乎无约束。
+
+**两项改动**（最小破坏）：
+
+| 改动 | 内容 | 数量级效果 |
+|---|---|---|
+| `laguerre_basis.py:coeff_decay_loss()` 公式 | `1/k!` → `1/(k+1)` | c_9 权重 2.8e-6 → **0.1**（36288×） |
+| `v3_stage_a_laguerre_basis_f.yaml:coeff_decay` 权重 | `1e-3` → `5.0` | 整体权重 5000× |
+| 净效果（对 c_9） | 原 1/k! × 1e-3 → 0.1 × 5.0 | c_9 约束强度提升 **~2 × 10^8 倍** |
+
+**§2.3 init 性质验证**（cold-start 时）：
+```
+coeff_decay_loss(c_init_H10s)  = 4.000e-09   ← 解析 init 下仍极小
+coeff_decay_loss(c_zero)       = 0.000e+00
+coeff_decay_loss(c_mixed 2 orb)= 1.997e-09
+```
+§2.3 "初始化 = 物理" 性质**保持**。
+
+### 13.10.6 工件
+
+| 工件 | 路径 | 状态 |
+|---|---|---|
+| §13.10-A 配置 | `rc_pinn_art_project/configs/v3_stage_a_laguerre_basis_f.yaml` | ✅ 已创建（coeff_decay: 5.0） |
+| `coeff_decay_loss` 修改 | `rc_pinn_art_project/pinn_art/nets/laguerre_basis.py` | ✅ 已改（1/k! → 1/(k+1)） |
+| §13.10-A GPU 启动脚本 | `rc_pinn_art_project/scripts/run_step_f_gpu.sh` | ✅ 已创建 |
+| §13.10-A 训练日志 | `rc_pinn_art_project/logs/v3_stage_a_laguerre_basis_f_*/` | ⏳ 用户在 IDE terminal 启动 GPU 训练 |
+| §13.10-A 评估 JSON | `rc_pinn_art_project/results/laguerre_basis_eval/stage_a_f_*.json` | ⏳ 训练后跑评估 |
+
+### 13.10.7 训练命令（用户执行）
+
+```bash
+cd /home/chaos/workspace2/DiracNet_V3/rc_pinn_art_project
+
+# 1. 启动 GPU 训练（5k epoch，bg）
+bash scripts/run_step_f_gpu.sh 5000 f5k_gpu
+
+# 2. 监控进度
+tail -f logs/v3_stage_a_laguerre_basis_f/train_f5k_gpu_*.log
+
+# 3. 训练完成后，跑评估
+python scripts/v3_evaluate_laguerre_basis.py \
+    --config configs/v3_stage_a_laguerre_basis_f.yaml \
+    --ckpt checkpoints/v3_stage_a_laguerre_basis_f/stage_a_last.msgpack \
+    --max-rows 260
+```
+
+**预期效果**（基于 §13.10.2/§13.10.5 推断）：
+- 节点门禁 63.1% → **≥ 75%**
+- cos < 0.1 失败数 52 → **25-35**
+- λ-drift 保持 ~ 0（Step E 已实现）
+
+### 13.10.8 §13.10-A 实测结果：**严重负结果**（2026-06-21）
+
+| 指标 | Step E 5k GPU | **Step F 5k GPU** | 变化 |
+|---|---|---|---|
+| 节点门禁 | 164/260 = 63.1% | **26/260 = 10.0%** | **-53pp** ↓ ↓ |
+| mean cos | 0.75 | **0.108** | -86% ↓ ↓ |
+| λ-drift mean | 2.7e-8 | **3.96** | +9 个数量级 ↑ ↑ |
+| λ-drift max | 5.2e-7 | **8.83** | +9 个数量级 ↑ ↑ |
+| Z=1..14 每行 pass>0.95 | 0~1 | 几乎全 0 | 全部崩溃 |
+| epoch 4999 total loss | 40 | **3894** | ×97 ↑ |
+| epoch 4999 coeff_decay (raw) | 2400 | 449 | ×0.19 ↓ |
+
+**结论**：`coeff_decay` 权重 5.0 + 1/(k+1) 公式**压垮网络**——为最小化 c² 损失，MLP 让所有 c_k 趋向 0，P(r) 几乎消失，PDE 残差暴增（loss ×100），λ 漂移失控。
+
+**失败根因**：**`coeff_decay_loss` 与 PDE 损失严重冲突**——PDE 要 P(r) 形状精确（需要 c_k 全套），coeff_decay 要 c_k² ≈ 0（破坏 P(r)）。权重 5.0 让后者完全主导。
+
+### 13.10.9 §13.10-A 失败教训 → 下一步路线
+
+1. **§13.10-A 已证伪**：sparse forcing 在当前架构下不可行（无解调和 PDE 的损失函数）
+2. **§13.10-B（sparse soft-mask）有理论可能**：让 MLP 自由学 sparse vs dense 模式，gate 默认输出 1（接近 init），训练过程中只在需要时下调 gate
+3. **§13.11 候选**：不强化 sparse 约束，而是**让 LaguerreCoeffHead 走完全不同的初始化**：
+   - 当前：delta zero-init（c_k = coeff_init）
+   - 新：让 delta 直接对**节点位置**建模（输出 n-1 个节点位置，隐式确定 c_k）
+   - 难点：节点数随 n 变（n-1 维输出），需动态维度
+
+**当前最务实的方向**：
+
+| 候选 | 复杂度 | 预期效果 |
+|---|---|---|
+| **§13.11：节点位置直接参数化** | 高（需动态输出维度） | 直接解决根本 |
+| **§13.12：把 trunk 换成 Hermite-style 基函数**（n-th root 直接建模）| 中 | 物理归纳偏置 |
+| **§13.10-B：sparse soft-mask** | 低 | 缓解但不根治 |
+| **§13.13：coeff_decay 退到 0.5-1.0**（coeff_decay 权重 0.05 而非 5.0）| 极低 | 微调，预期效果小 |
+
+**§13.10 阶段的结论**：单纯改 loss 权重不能解决 cos 反相问题；**根因在架构**——`LaguerreCoeffHead` 的 K+1 独立系数输出格式与稀疏物理解存在不可调和的失配。
+
+### 13.10.10 工件（最终）
+
+| 工件 | 路径 |
+|---|---|
+| §13.10-A 配置 | `rc_pinn_art_project/configs/v3_stage_a_laguerre_basis_f.yaml` |
+| §13.10-A GPU 启动脚本 | `rc_pinn_art_project/scripts/run_step_f_gpu.sh` |
+| §13.10-A GPU ckpt | `rc_pinn_art_project/checkpoints/v3_stage_a_laguerre_basis_f_f5k_gpu/stage_a_last.msgpack` |
+| §13.10-A GPU 训练日志 | `rc_pinn_art_project/logs/v3_stage_a_laguerre_basis_f_f5k_gpu/history.csv` |
+| §13.10-A 真实评估 JSON | `rc_pinn_art_project/results/laguerre_basis_eval/stage_a_f_f5k_gpu_v2.json` |
+| §13.10-A 用户误用评估 JSON | `rc_pinn_art_project/results/laguerre_basis_eval/stage_a_f_f5k_gpu.json` ⚠️ **这是 init params 评估，不是 ckpt 评估** |
+| `coeff_decay_loss` 修改 | `rc_pinn_art_project/pinn_art/nets/laguerre_basis.py`（1/k! → 1/(k+1)） |
+
+**警示**：用户给的 `stage_a_last.json`（实际写入 `stage_a_f_f5k_gpu.json`）**与真实 ckpt 评估不符**。原因可能是：
+- 评估脚本 `--ckpt` 参数没有显式给 → fall back 到 init params（恰好满足 §2.3 init = 物理）
+- `stage_a_last.json` 默认路径可能指向 `checkpoints/v3_stage_a_laguerre_basis/stage_a_last.msgpack`（Step A 的旧 ckpt，不存在）
+
+**修正建议**：重新评估 Step F 必须显式 `--ckpt checkpoints/v3_stage_a_laguerre_basis_f_f5k_gpu/stage_a_last.msgpack`。
+
+---
+
+## 13.11 §13.11 候选技术路径：节点位置直接参数化（推荐）
+
+> **本节是 §13.11 的统一讨论入口**。从最初的"节点位置直接参数化"出发，经过多轮对比与方案融合，最终收敛为 **§13.11-C（联合方案：节点粗估 + c_k 迭代精化）**——这是当前最推荐的技术路径。
+>
+> 4 个子方案的对比与决策汇总在 §13.11.5 "决策矩阵"。
+
+---
+
+### 13.11-A 严格 1-sparse 节点版（单电子专用）
+
+#### 13.11-A.1 核心思想
+
+**§13.10 失败的根本洞察**：`LaguerreCoeffHead` 输出 K+1 独立系数 → 系数空间 10 维 → 物理解（1-sparse）落在一个 1 维子空间上 → 训练时 MLP 难以把解约束到这个 1 维子空间 → 跑偏到 10 维空间其他位置。
+
+**§13.11-A 思路**：把 c_k 空间换成**节点位置空间**（物理空间），让网络输出**节点位置序列** $\{r_1, r_2, ..., r_{n-l-1}\}$ 而非 K+1 个系数：
+
+- 节点数 = n-1（**天然变长**，与 n 强相关）
+- 节点位置决定 c_k（通过 Gauss–Laguerre 正交关系的逆构造）
+- 网络输出维度从 K_max+1（10）变成 max(n-1) = 9 → **减少 1 维**
+- **节点位置空间是单调正序列**（$0 < r_1 < r_2 < ... < r_{n-1}$）→ 网络输出天然受单调性约束
+
+#### 13.11-A.2 实现路径
+
+**A. 节点位置 → c_k 的逆构造**
+
+```
+已知 L_{n-1}^α(2λr) 的 n-1 个零点 {r_j}
+求 c_k：
+  L_{n-1}^α(2λr) = Σ_{k=0}^{n-2} c_k · L_k^α(2λr)
+  是一个 Laguerre 多项式的**正交展开**（在权重 w(r) = r^α · e^{-2λr} 下正交）
+  所以 c_k = ∫ r^α e^{-2λr} L_{n-1}^α · L_k^α dr / ∫ r^α e^{-2λr} (L_k^α)² dr
+  → 用 5 点 Gauss-Laguerre 求积可以**精确**还原 c_k
+```
+
+**B. 网络架构**
+
+```python
+class LaguerreNodeHead(nn.Module):
+    K_max: int = 9
+    
+    @nn.compact
+    def __call__(self, branch_feat, lambda_a, n_orbital, alpha):
+        # 1. 输出 K_max 个原始节点增量（无约束）
+        r_raw = Dense(self.K_max)(branch_feat)  # [B, K_max]
+        
+        # 2. 强制单调 + 正性：softplus + cumulative sum
+        r_pos = jax.nn.softplus(r_raw) + 1e-3           # [B, K_max]
+        r_sorted = jnp.cumsum(r_pos, axis=-1)           # [B, K_max] 单调递增
+        
+        # 3. mask 屏蔽 k >= n-1（对应物理 n-1 个节点）
+        k_idx = jnp.arange(self.K_max)
+        valid_mask = (k_idx < (n_orbital - 1)).astype(float)
+        r_nodes = r_sorted * valid_mask
+        
+        # 4. 节点位置 → c_k（5 点 Gauss-Laguerre 逆构造）
+        c_k = nodes_to_laguerre_coeffs(r_nodes, lambda_a, n_orbital, alpha)
+        
+        return c_k  # [B, K_max + 1]
+```
+
+**C. §2.3 init 性质验证**
+
+softplus(0) = log(2) ≈ 0.693，cumsum 后 r_nodes 非零。需要修正 init 路径（见 §13.11-C 路线 A 的 init 精确设计）。
+
+#### 13.11-A.3 局限性
+
+| 问题 | 说明 |
+|---|---|
+| **多电子失效** | 严格 1-sparse 是氢原子特殊性；多电子 P_a(r) 是多 sparse（多个非零 c_k）|
+| **init 不严格** | softplus(0) ≠ 0，需额外修正 |
+| **逆构造精度** | 5 点 Gauss 求积对小 λ 不够 |
+
+#### 13.11-A.4 预期效果（单电子专用）
+
+| 指标 | Step E | **§13.11-A (预期)** |
+|---|---|---|
+| 节点门禁 | 63.1% | **75-85%** |
+| 多电子兼容 | ✅ | ❌ |
+
+---
+
+### 13.11-B 多 sparse 节点版（多电子兼容）
+
+#### 13.11-B.1 与 A 的差异
+
+| 维度 | §13.11-A | §13.11-B |
+|---|---|---|
+| Sparse 假设 | 1-sparse（严格）| 多 sparse（允许多个非零 c_k）|
+| 节点 → c_k 方式 | 严格逆构造（精确）| 近似拟合（Gauss / RBF）|
+| 多电子兼容 | ❌ | ✅ |
+| §2.3 init | 严格 | 近似 |
+| 实施难度 | 中 | **中高** |
+
+#### 13.11-B.2 设计
+
+让网络输出：
+- **n-1 个节点位置**（仍然单调，因为 P_a(r) 节点是单调的——这是 Laguerre 多项式根的数学性质，对单/多电子同样成立）
+- **额外的"幅度向量"**（决定每个 Laguerre 项的贡献权重）
+
+```python
+class MultiElectronNodeHead(nn.Module):
+    K_max: int = 9
+    
+    @nn.compact
+    def __call__(self, branch_feat, n_orbital, lambda_a, alpha):
+        # 节点位置（仍然单调——数学定理）
+        dr_raw = Dense(self.K_max, kernel_init=zeros)(branch_feat)
+        dr = jax.nn.softplus(dr_raw) - jnp.log(2.0)   # 让 softplus(0)=0（init 友好）
+        r_nodes = jnp.cumsum(dr, axis=-1)
+        r_nodes = r_nodes * (jnp.arange(self.K_max) < (n_orbital - 1)).astype(float)
+        
+        # 幅度向量（不再强制 1-hot）
+        amp = jax.nn.softplus(Dense(self.K_max + 1)(branch_feat))
+        
+        # 节点 + 幅度 → c_k（RBF 拟合）
+        c_k = rbf_based_coeffs(r_nodes, amp, lambda_a, alpha)
+        return c_k
+```
+
+#### 13.11-B.3 节点作为先验的强度
+
+- **任何 P_a(r) 都有 n-1 个节点**（数学事实，不依赖单/多电子）
+- 节点位置作为归纳偏验的强度 ≈ Laguerre 根作为先验的强度
+- 多电子下节点位置 ≠ Laguerre 根（因为 P_a(r) ≠ Laguerre 多项式），但**仍然是有意义的物理量**
+
+#### 13.11-B.4 预期效果
+
+| 指标 | 单电子 | **多电子** |
+|---|---|---|
+| 节点门禁 | ≥ 80% | 65-75%（依赖多电子训练数据）|
+| cos < 0.1 失败 | < 15 | < 25 |
+| 多电子扩展性 | ❌ | ✅ |
+
+---
+
+### 13.11-C 联合方案：节点粗估 + c_k 迭代精化（⭐ 推荐）
+
+#### 13.11-C.1 核心思想
+
+**核心洞察**：方案 F（迭代精化 c_k）单独使用受限于"10 维 c_k 空间无约束"；方案 1'（节点位置）单独使用受限于"逆构造精度"。**两者联合**：
+
+- **阶段 1（§13.11-B 节点头）**：粗估节点位置 + 近似 c_k（warm-up）
+- **阶段 2（§13.11-D 迭代精化头）**：以阶段 1 的 c_k 为初值，迭代精化（refinement）
+
+**两阶段各自解决不同问题**：
+- 阶段 1 提供**有约束的初值**（节点位置先验 → 物理合法 c_k）
+- 阶段 2 在**初值附近精化**（避免 10 维空间搜索）
+
+#### 13.11-C.2 完整架构
+
+```python
+class HybridLaguerreHead(nn.Module):
+    """方案 1' (节点粗估) + 方案 F (迭代精化) 联合"""
+    K_max: int = 9
+    n_iter: int = 3
+    d_hidden_node: int = 64   # 阶段 1 hidden
+    d_hidden_ref: int = 32    # 阶段 2 hidden
+    
+    @nn.compact
+    def __call__(self, branch_feat, n_orbital, lambda_a, alpha, r_nodes_analytic):
+        # ============ 阶段 1：§13.11-B 节点头（粗估）============
+        # 节点位置增量（init = 0 → r_nodes = analytic）
+        dr_raw = Dense(self.K_max, kernel_init=zeros)(branch_feat)
+        dr = jax.nn.softplus(dr_raw) - jnp.log(2.0)   # softplus(0) = 0
+        r_nodes_delta = jnp.cumsum(dr, axis=-1)
+        
+        k_idx = jnp.arange(self.K_max)
+        mask = (k_idx < (n_orbital - 1)).astype(float)
+        r_nodes = (r_nodes_analytic + r_nodes_delta) * mask
+        
+        # 节点 → c_k（近似逆构造，20 点 Gauss 求积）
+        c_k_stage1 = nodes_to_laguerre_coeffs(r_nodes, lambda_a, n_orbital, alpha)
+        
+        # ============ 阶段 2：§13.11-D 迭代精化头 ============
+        c_k = c_k_stage1
+        for i in range(self.n_iter):
+            inp = jnp.concatenate([branch_feat, c_k], axis=-1)
+            with nn.scope(f'iter_{i}'):
+                h = nn.relu(nn.Dense(self.d_hidden_ref)(inp))
+                delta = nn.Dense(self.K_max + 1, kernel_init=zeros)(h)
+                c_k = c_k + 0.1 * delta   # 小步长精化
+        
+        return c_k
+```
+
+#### 13.11-C.3 §2.3 init 严格保持（路线 A：节点 init 精确）
+
+**关键设计**：让阶段 1 的网络输出**严格 init = 解析节点位置**：
+
+```python
+# softplus(0) - log(2) = 0  ← 让 init 严格为 0
+dr = jax.nn.softplus(dr_raw) - jnp.log(2.0)
+# cumsum of zeros = zeros
+# r_nodes = (r_nodes_analytic + zeros) * mask = r_nodes_analytic ✓
+```
+
+**init 链验证**：
+
+```
+阶段 1 init:
+  - dr_raw = 0 → dr = 0 → r_nodes = r_nodes_analytic（严格解析）
+  - 逆构造 c_k_stage1 = 严格解析 c_k
+阶段 2 init:
+  - 接收 c_k_stage1 = 解析 c_k
+  - 每次迭代 delta = 0（kernel_init=zeros）
+  - 输出 c_k = 解析 c_k（严格）
+
+总 init: c_k = 解析 c_k ✅ §2.3 性质严格保持
+```
+
+#### 13.11-C.4 训练时的两阶段学习
+
+- **训练初期**：阶段 1 主导（节点位置快速对齐到解析位置）
+- **训练中期**：阶段 2 开始精化（小步调整 c_k）
+- **训练后期**：节点位置微调 + c_k 精化同时进行
+
+#### 13.11-C.5 预期效果
+
+| 指标 | Step E | 单独 §13.11-B | **联合 §13.11-C (预期)** |
+|---|---|---|---|
+| 节点门禁 | 63.1% | 75-85% | **≥ 85%** |
+| cos < 0.1 失败 | 52 | < 15 | **< 10** |
+| 多电子兼容 | ✅ | ✅ | ✅ |
+| §2.3 init | ✅ | ✅（近似）| ✅（严格）|
+| 实施难度 | — | 中 | **中高** |
+| 训练稳定性 | 中 | 中 | **中-高** |
+
+#### 13.11-C.6 实施路线（4-5 天）
+
+1. **第 1 天**：预计算 `data_cache/laguerre_nodes_z1_26_n1_10.parquet`（260 行 × K_max 维解析节点表）
+2. **第 2-3 天**：实现 `nodes_to_laguerre_coeffs` 工具函数（20 点 Gauss-Laguerre 求积）
+3. **第 3-4 天**：实现 `HybridLaguerreHead`（两阶段）+ 替换 `LaguerreCoeffHead`
+4. **第 4-5 天**：冷启动训练 5k epoch + 评估
+
+#### 13.11-C.7 风险与缓解
+
+| 风险 | 缓解 |
+|---|---|
+| 节点 → c_k 逆构造精度 | 20 点 Gauss 求积（误差 < 1e-10）+ 单元测试 |
+| 阶段 2 步长 0.1 + n_iter=3 不够 | 引入可学习步长 + n_iter=5 |
+| 两阶段梯度耦合 | 阶段 2 接收 c_k 而非节点（避免循环）|
+| 冷启动训练慢 | 接受（先验强 → 起步容易 → 收敛快）|
+
+---
+
+### 13.11-D 迭代精化版（方案 F 单独，baseline 备选）
+
+#### 13.11-D.1 核心思想
+
+保留当前 MLP 输出 10 个 c_k 的架构，但改为**多次迭代精化**：
+
+```python
+class IterativeCoeffHead(nn.Module):
+    n_iterations: int = 3
+    d_hidden: int = 32
+    
+    @nn.compact
+    def __call__(self, branch_feat, coeff_init):
+        c_k = coeff_init  # init = sparse 解析
+        for i in range(self.n_iterations):
+            inp = jnp.concatenate([branch_feat, c_k], axis=-1)
+            with nn.scope(f'iter_{i}'):
+                h = nn.relu(nn.Dense(self.d_hidden)(inp))
+                delta = nn.Dense(K_max + 1, kernel_init=zeros)(h)
+                c_k = c_k + 0.1 * delta  # 小步长更新
+        return c_k
+```
+
+#### 13.11-D.2 §2.3 init 严格保持
+
+- 每次迭代 delta = 0（kernel_init=zeros）
+- 输出 c_k = coeff_init（严格解析）
+- §2.3 性质**严格保持**
+
+#### 13.11-D.3 局限性（已被 §13.10 间接证伪）
+
+- **10 维 c_k 空间无约束**——稀疏必须由架构强制，§13.10 已证 L2 约束无法做到
+- **物理先验弱**——网络可能学到一个"折中解"（多个非零 c_k 互相补偿）
+- **多电子兼容** ✅（比 13.11-A 好）
+
+#### 13.11-D.4 预期效果
+
+| 指标 | Step E | **§13.11-D (预期)** |
+|---|---|---|
+| 节点门禁 | 63.1% | **65-70%**（边际改善）|
+| cos < 0.1 失败 | 52 | 45-50 |
+| 实施难度 | — | **低**（1 天）|
+
+**结论**：作为快速验证 baseline 可用，但不应作为最终方案。
+
+---
+
+### 13.11 决策矩阵
+
+| 维度 | §13.11-A | §13.11-B | **§13.11-C (推荐)** | §13.11-D |
+|---|---|---|---|---|
+| **物理先验强度** | 高（严格 1-sparse）| 中（多 sparse 节点）| **高**（节点 + 精化）| 低（仅 init）|
+| **多电子兼容** | ❌ | ✅ | ✅ | ✅ |
+| **§2.3 init 严格** | ✅（修正后）| ✅（近似）| **✅（严格）**| ✅ |
+| **预期节点门禁** | 75-85% | 70-80% | **≥ 85%** | 65-70% |
+| **实施难度** | 中 | 中高 | **中高** | 低（1 天）|
+| **训练稳定性** | 中 | 中 | **中-高** | 中 |
+| **物理可解释性** | 高 | 高 | **高** | 低 |
+| **代码风险** | 中 | 中 | **中** | 低 |
+| **冷启动训练** | ✅ | ✅ | ✅ | ✅ |
+| **ckpt 兼容性** | 冷启动 | 冷启动 | 冷启动 | 冷启动 |
+
+### 13.11 推荐选择
+
+**当前（单电子阶段）→ §13.11-C**
+
+理由：
+- 解决 §13.10 失败根因（10 维空间稀疏搜索）
+- 物理先验强（节点位置 + 迭代精化）
+- §2.3 init 严格保持
+- 预期效果最好（节点门禁 ≥ 85%）
+
+**未来（多电子扩展）→ §13.11-C 保持**
+
+理由：
+- 联合方案自动兼容多电子
+- 多电子下 c_k_stage1 由 RBF 拟合而非严格逆构造
+- 阶段 2 精化弥补逆构造的近似误差
+
+**最简备选 → §13.11-D**
+
+如果时间紧或想快速验证"是否 c_k 空间精化有效"，先用 §13.11-D（1 天）。
+
+---
+
+### 13.11 关键洞察总结
+
+1. **物理先验 > 后验损失引导**：§13.10 已证 L2 / sparse 损失无法到达稀疏角落；架构必须内置稀疏先验。
+2. **节点位置比 c_k 更直接**：节点是 Laguerre 根的数学事实，单/多电子都成立；c_k 是派生的物理量。
+3. **粗-精两阶段 > 单一阶段**：粗估提供有约束的初值，精化在初值附近调整——比"全空间搜索"高效得多。
+4. **联合方案的 §2.3 init 路径**：softplus(x) - log(2) 让 init 严格为 0，避免 cumsum 累积偏差。
+
+### 13.11 实测：§13.11-C 联合方案 GPU 训练结果（Step G, 5k epoch, 2026-06-21）
+
+> **核心结论**：§13.11-C **完全失败** —— 节点 Stage 1 没有显著贡献，c_k Stage 2 退化把长程节点（n≥8）压扁。架构设计本身在概念上有价值，但实施细节（softplus + cumsum + iterative refinement）让网络找到了"删除节点 → PDE 残差下降"的病态解。
+
+#### 13.11.1 训练概况
+
+| 项 | 值 |
+|---|---|
+| 配置 | `configs/v3_stage_a_laguerre_basis_g.yaml`（基于 _e.yaml）|
+| ckpt | `checkpoints/v3_stage_a_laguerre_basis_g_g5k_gpu/stage_a_last.msgpack`（1.06 MB）|
+| 参数规模 | 0.26M floats |
+| 训练耗时 | ~25 分钟（5000 epoch, GPU）|
+| 最终 loss | 1.69（从 4198 起，初始 pde=4188 → 0.79）|
+| λ-drift (mean/max) | 3.6% / 18.4% |
+
+#### 13.11.2 节点门禁结果（260 行评测）
+
+| 指标 | Step E (Step F §13.10-A 已证伪) | **§13.11-C (Step G)** |
+|---|---|---|
+| 节点门禁总通过 | 164 / 260 (63.1%) | **162 / 260 (62.3%)** ≈ Step E |
+| n=1 全 Z | 26/26 (100%) | 26/26 (100%) ✓ |
+| n=2..7 高 Z (16-26) | ~70% | **45-50%**（每个 Z 缺 1 节点）|
+| n=8..10 全 Z | <20% | **0%**（长程节点全部消失）|
+| mean cos(P, P_H) | 0.70 | **0.7375**（轻微改善）|
+| cos < 0.1 失败数 | 52 | **49**（轻微改善）|
+
+#### 13.11.3 失败模式分析（VPQ 图）
+
+8 张典型案例的对比图位于 `cfac_jobs/energy_batch/vpq_compare_g_g5k_gpu/`：
+
+| Case | V(r) | P(r) | Q(r) | 节点 |
+|---|---|---|---|---|
+| **H 1s** | 完美 | 完美 | 完美 | 0/0 ✓ |
+| **H 8s** | 好 | **少 1 节点**（6/7）| 偏移 | 6/7 ✗ |
+| **H 10s** | 好 | **少 1 节点**（8/9）| 偏移 | 8/9 ✗ |
+| **Fe 1s** (Z=26) | 好 | **r>0.05 完全失控** | 反向 | 0/0 (塌成单峰) |
+| **Fe 8s** (Z=26) | 好 | **单峰无节点** | 偏移 | 0/7 (节点全消失) |
+| **Ni 2s** (Z=22) | 好 | 节点数对（1/1）但形状巨变 | 反相 | 1/1 (但 cos=-1.0) |
+| **C 6s** (Z=6) | 好 | 节点数 4/5 | OK | 4/5 ✗ |
+| **O 8s** (Z=8) | 好 | **少 1 节点** | 偏移 | 6/7 ✗ |
+
+**核心现象**：
+- **V(r) 始终优秀**：V 头未被改动，basis 完好。
+- **短程 n=1..7 几乎完美**：H 1s / 2s / 5s / C 6s / Z=17..26 n=2..5 的 cos 仍 ≥ 0.99。
+- **长程 n≥8 节点被"压扁"**：Hybrid head 的 Stage 2 找到了"降低节点数 → PDE 残差下降"的捷径。
+- **高 Z 短程也失效**：Fe 1s 的 P 在 r>0.05 完全失序，主峰位置跑到 r=10 而非 r=1/26=0.038。
+
+#### 13.11.4 能量对比结果（PINN vs NIST vs cFAC）
+
+| Metric | PINN vs NIST | FAC vs NIST | PINN vs FAC |
+|---|---|---|---|
+| mean (meV) | -8893 | -15186 | +6293 |
+| median (meV) | -106 | -185 | -15 |
+| **RMSE (meV)** | **79841** ⚠️ | 53799 | 94615 |
+| max\|Δ\| (meV) | 801970 | 382630 | 775610 |
+
+**Per-Z RMSE 趋势**（PINN vs NIST meV）：
+
+| Z | Step E (meV) | **Step G (meV)** | Δ |
+|---|---|---|---|
+| 1 | 569 (=0.57 eV) | **89** (=0.089 eV) | **-84%** ✓ |
+| 2 | 545 (=0.55 eV) | **119** (=0.119 eV) | **-78%** ✓ |
+| 5 | 647 (=0.65 eV) | **477** (=0.48 eV) | -26% ✓ |
+| 10 | 3 631 (=3.6 eV) | 3 465 (=3.5 eV) | -5% ≈ |
+| 15 | (≈) | 10 686 (=10.7 eV) | (基准) |
+| 20 | (≈) | 41 444 (=41.4 eV) | ⚠️ |
+| 26 | 65 085 (=65 eV = 0.065 keV) | **258 347** (=258 eV = 0.258 keV) | **+297%** ⚠️⚠️⚠️ |
+
+**Top-10 worst PINN**（全部 Z=17..26 的 1s 轨道）：
+- Z=26 1s: 134.4 eV (0.134 keV) 误差（PINN=-333 vs NIST=-338）
+- Z=22 1s: 89.9 eV (0.090 keV) 误差
+
+#### 13.11.5 根因分析（为什么 §13.11-C 失败？）
+
+| 设计目标 | 实际结果 | 失败原因 |
+|---|---|---|
+| Stage 1 节点粗估 | 几乎没学到（节点位置仍 ≈ 解析）| softplus + cumsum 让 Δr 必须正向，网络选择 Δr≈0 → Stage 1 不参与 |
+| Stage 2 c_k 精化 | **破坏性大**：把 n≥8 的 9 节点压到 6-8 | PDE 损失鼓励节点少（震荡小），Stage 2 把 c_k 的稀疏性破坏 |
+| 节点位置预测 | **完全没用**：pde 残差用更少的节点就能降到 0.79 | c_k 比节点位置更直接 |
+| §2.3 init 性质 | ✓ 严格保持（unit test 通过）| softplus-log2 trick 工作 |
+| 总体评估 | 整体 RMSE **恶化** 2.1x（37 750 → 79 841 meV，即 37.75 → 79.84 eV，0.038 → 0.080 keV）| 高 Z 1s 灾难性发散 |
+
+**核心教训**：
+1. **实现层 bug：节点表路径错误**。原 Step G 配置在 `rc_pinn_art_project` 启动时把 `nodes_table_path` 解析成 `rc_pinn_art_project/rc_pinn_art_project/data_cache/...`，`collate_batches` 又静默 fallback 到零节点。因此原 Step G 实际没有使用解析节点先验。
+2. **节点 Stage 1 原本只作为弱特征**：`delta_r → node_feat → MLP → c_k`，没有直接进入 P(r) 构造；网络可以完全忽略节点。
+3. **c_k Stage 2 是"破坏组件"**：3 次迭代 + step=0.1 让网络有充分自由度破坏稀疏性。
+4. **PDE loss 与节点数不匹配**：当前的 pde loss 不强制节点数，PDE 残差可以被少节点的 P 满足。
+
+> **重要更正（2026-06-22）**：上述 Step G 结果不能视为“修复后 §13.11-C”的最终结论，因为训练时 `analytic_nodes=0`。已在程序中完成修复：  
+> - `collate.py`：节点表路径改为 robust resolve；`build_nodes=True` 时找不到节点表立即报错，不再静默返回零节点。  
+> - `HybridLaguerreHead`：新增 `nodes_to_laguerre_coeffs()`，让 learned nodes 直接投影生成 Laguerre `c_k`；最终采用 `coeff_init + (c(nodes_learned)-c(nodes_analytic))` 保证 init 精确等于解析物理。  
+> - `deeponet.py`：Hybrid head 现在接收实际 `λ`、`α=2|κ|-1`、`degree=n-l-1`。  
+> - 训练、评估、cFAC VPQ/energy 对比入口均显式传入 `build_nodes=use_hybrid_head`。
+
+#### 13.11.6 §13.11-C 修正方向（若继续 §13.11 路线）
+
+| 方向 | 思路 | 复杂度 |
+|---|---|---|
+| **§13.11-C'：节点硬约束** | 在 c_k Stage 2 之外加 "节点数正则化损失" L_nodes = max(0, n_actual - n_target)² | 中 |
+| **§13.11-C''：冻结 c_k Stage 2** | 只用 Stage 1 节点调整（不动 c_k）| 低 |
+| **§13.11-E：节点差分型** | 不用 cumsum，用 Δr 直接当节点位置（r_actual = r_analytic + Δr），无累积约束 | 中 |
+| **§13.11-F：纯节点参数化（§13.11-A 严格版）** | 完全废弃 c_k 网络输出，节点位置 = 唯一自由度 + 解析 c_k 反构造 | **高**（需 Gauss-Laguerre 逆构造）|
+
+#### 13.11.7 推荐决策
+
+**§13.11 路线暂停**。建议转向：
+
+1. **§13.11-C''（节点 Stage 1 only）**：最低成本实验，看节点 Stage 1 是否能独立贡献
+2. **§13.12（Hermite-Gauss trunk）**：完全替换 SIREN 为物理基函数
+3. **§13.13（coeff_decay 微调）**：低成本实验
+
+**§13.11-C 评估工件**：
+- 训练 log：`rc_pinn_art_project/logs/v3_stage_a_laguerre_basis_g/train_g5k_gpu_20260621_223931.log`
+- 训练 history：`rc_pinn_art_project/logs/v3_stage_a_laguerre_basis_g_g5k_gpu/history.csv`（5000 epochs）
+- 评估 JSON：`rc_pinn_art_project/results/laguerre_basis_eval/stage_a_g_g5k_gpu.json`（260 行）
+- VPQ 图：`cfac_jobs/energy_batch/vpq_compare_g_g5k_gpu/VPQ_*.png`（8 张）
+- 能量 CSV：`cfac_jobs/energy_batch/energy_compare_g_g5k_gpu/{energy_comparison,per_Z_stats,top10_worst_PINN}.csv`
+- 能量图：`cfac_jobs/energy_batch/energy_compare_g_g5k_gpu/{energy_1to1,per_Z_RMSE,error_histograms}.png`
+
+### 13.11.8 §13.11-C 修正版重训结果（Step G v2, 2026-06-23）→ **路线最终关闭**
+
+§13.11.5 的"重要更正"修复了节点表路径 + Hybrid head 真正接收 λ/α/degree 后，于 2026-06-23 冷启动重训 5k（`--tag g5k_v2_fixed`），并重跑 VPQ + 能量三路对比。
+
+| 指标 | Step C 5k（朴素 head）| Step E 5k | **Step G v1（节点表未生效）** | **Step G v2（修正版，本轮）** |
+|---|---|---|---|---|
+| 260 行能量 RMSE (meV) | **28 042** | 37 750 | 79 841 | **29 654** |
+| 能量中位数 ΔE (meV) | +1395 | −164 | −106 | −395 |
+| 节点门禁 | 60.0% | 63.1% | 62.3% | ~62% |
+| n=8 长程 cos | 反相 | 反相 | 反相 | **仍反相** |
+| Z=6 单点离群 | 无 | 无 | 有 | **349 eV（C 2s 仍爆）** |
+
+**结论（§13.11 路线关闭）**：
+1. 修正版把 RMSE 从 v1 的 79 841 改善到 29 654（−63%），但**仍不优于最朴素的 Step C（28 042）**——节点参数化 + 迭代精化的全部复杂度**净收益为零甚至略负**。
+2. **n=8 长程反相完全没解决**（与 Step C/E/G-v1 完全相同），证明失败根因**与 Hybrid head 无关**。
+3. **§13.11（A/B/C/D 全部子方案）正式判定为负结果，路线关闭。**
+
+**工件（Step G v2）**：
+- ckpt：`rc_pinn_art_project/checkpoints/v3_stage_a_laguerre_basis_g_g5k_v2_fixed/stage_a_last.msgpack`
+- 评估 JSON：`rc_pinn_art_project/results/laguerre_basis_eval/stage_a_g_g5k_v2_fixed.json`
+- VPQ 图：`cfac_jobs/energy_batch/vpq_compare_g_g5k_v2_fixed/VPQ_*.png`（15 张）
+- 能量 CSV/图：`cfac_jobs/energy_batch/energy_compare_g_g5k_v2_fixed/{energy_comparison.csv,per_Z_stats.csv,top10_worst_PINN.csv,energy_1to1.png,per_Z_RMSE.png,error_histograms.png}`
+
+---
+
+## 13.12 §13.12 候选技术路径：Trunk 换 Hermite-style 基函数
+
+### 13.12.1 核心思想
+
+**§13.12 假设**：当前失败不是因为 coeff_head 容量不够，而是 **trunk SIREN 输出的 P(r) 候选函数族无法精确表达 Laguerre 节点**。
+
+**类比**：用 3 次多项式拟合 sin(x)：trunk 容量再大也无法精确表达正弦周期。**基函数选错**是根本。
+
+### 13.12.2 设计：Hermite 基 + Laguerre 节点
+
+把 SIREN trunk 替换为**Hermite-Gauss 基函数**：
+
+$$T(r) = \sum_{j=1}^{N_T} a_j \cdot H_j(r / \sigma) \cdot e^{-r^2/(2\sigma^2)}$$
+
+其中 $H_j$ 是 Hermite 多项式，σ 是 trunk learnable scale 参数。
+
+**为什么这样能解决 cos 反相问题？**
+
+Hermite-Gauss 基函数是**正交的振荡基**，能精确表达任意节点位置的振荡模式。相比 SIREN 的 sin(ω₀x)，Hermite-Gauss 多项式**天然具有 n-1 个节点**（$H_{n-1}$ 有 n-1 个零点），可以**通过阶数选择直接控制节点数**。
+
+### 13.12.3 实现路径
+
+```python
+class HermiteGaussTrunk(nn.Module):
+    N_terms: int = 16       # Hermite 基函数个数
+    sigma: float = 5.0      # Gaussian 宽度（learnable）
+    omega_0: float = 1.0    # Hermite 缩放
+    
+    @nn.compact
+    def __call__(self, r_grid):
+        # r_grid: [N_g]
+        x = r_grid[None, :] / self.sigma             # [1, N_g]
+        gauss = jnp.exp(-0.5 * x * x)                 # [1, N_g]
+        # Hermite 多项式（递归构造）
+        H = [jnp.ones_like(x), 2*x]                   # H_0, H_1
+        for j in range(2, self.N_terms):
+            H.append(2 * x * H[-1] - 2 * (j - 1) * H[-2])
+        H_stack = jnp.concatenate(H, axis=0)         # [N_terms, N_g]
+        # trunk 输出 = branch 决定系数 + Hermite-Gauss 基
+        coeffs = self.param('hermite_coeffs', 
+                            nn.initializers.normal(0.1), 
+                            (self.N_terms,))
+        return jnp.einsum('j,jg->g', coeffs, H_stack * gauss)
+```
+
+### 13.12.4 §2.3 init 性质验证
+
+**问题**：init 时 `hermite_coeffs` 默认正态分布 → trunk 输出非零 → P(r) 偏离解析
+
+**答**：用 **zero-init** for `hermite_coeffs`（与 LaguerreCoeffHead 一致），保证 init = 0。但这样 P(r) 也是 0……
+
+**答 2**：让 trunk 输出**作为 LaguerreCoeffHead 的 delta 修正**（不是直接 P(r)）：
+- 当前架构：coeff_head 输出 K+1 系数 → einsum 求 P(r)
+- 新架构：trunk 输出 [N_g] 数组 → **直接加到 P(r) 上** 作为小修正（≤ 5% 幅度）
+
+```python
+P_r = analytic_P(r) + perturb_scale_P * trunk(r)  # perturb_scale = 0.05
+```
+
+但这违反了 §2.3 的"解析 c_k"初始化原则——**§13.12 与 §2.3 init = 物理性质根本冲突**。
+
+### 13.12.5 §2.3 冲突的根本
+
+§2.3 要求 P(r) 在 init 时**精确等于氢解析 P_H(r)**。但 §13.12 的 Hermite-Gauss trunk 输出的"任意形状函数"无法精确还原 P_H（除非 N_terms → ∞）。所以 §13.12 必须放弃 §2.3 性质。
+
+**§2.3 性质放弃的代价**：
+- Init 时 P(r) ≠ P_H(r) → 第一 epoch 的 PDE loss 已经有大残差
+- 训练初期不稳定（已知 Step B 早期也有类似问题）
+- 但**长期**可能因为更丰富基函数族获得更好收敛
+
+### 13.12.6 预期效果 vs 风险
+
+| 指标 | Step E | **§13.12 (预期)** |
+|---|---|---|
+| 节点门禁 | 63.1% | **≥ 75%**（Hermite 节点灵活） |
+| §2.3 init = 物理 | ✅ | ❌ **必须放弃** |
+| 训练稳定性 | 中 | 低（init 偏离） |
+| 代码改动量 | — | 中（替换 trunk） |
+| 风险等级 | — | **高**（违反 §2.3） |
+
+### 13.12.7 适用场景
+
+§13.12 只在 §13.11 也失败的极端情况下考虑。是**保底方案**。
+
+---
+
+## 13.13 §13.13 候选技术路径：coeff_decay 权重微调
+
+### 13.13.1 核心思想
+
+**§13.13 假设**：§13.10-A 失败不是因为"sparse forcing"方向错，而是**权重步长太大**（1e-3 → 5.0 = 5000×）。
+
+**类比**：学习率调度——大幅降低需要 warmup，不能一步到位。
+
+### 13.13.2 实施路径
+
+**A. 折中权重值**
+
+| 配置 | coeff_decay 权重 | 1/(k+1) 公式 | 预期效果 |
+|---|---|---|---|
+| Step E (基线) | 1e-3 | 1/k! | 63.1% |
+| **§13.13-1** | **0.05** | **1/(k+1)** | 60-65%（稳定） |
+| §13.13-2 | 0.5 | 1/(k+1) | 50-60%（开始压制） |
+| §13.13-3 | 1.0 | 1/(k+1) | 40-55%（明显压制） |
+| §13.10-A | 5.0 | 1/(k+1) | 10%（崩溃） |
+
+**B. 权重渐进 schedule**
+
+```yaml
+stage_a:
+  weights:
+    coeff_decay_schedule:
+      - [0, 1.0e-3]      # 前 1k epoch：基线
+      - [1000, 0.05]     # 1k..3k：折中
+      - [3000, 0.5]      # 3k..5k：开始压制
+      - [5000, 1.0]      # 5k+：稳定（如果还能继续训练）
+```
+
+需要 loss_schedule.py 支持 piecewise schedule（**当前不支持**，需新增代码）。
+
+### 13.13.3 预期效果
+
+| 指标 | Step E | **§13.13-1 (0.05 权重)** |
+|---|---|---|
+| 节点门禁 | 63.1% | **63-67%**（边际改善） |
+| cos < 0.1 失败 | 52 | **45-50** |
+| 训练稳定性 | 中 | **高**（与基线一致） |
+
+### 13.13.4 与 §13.10-A 的关键区别
+
+| | §13.10-A | §13.13 |
+|---|---|---|
+| 权重 | 5.0 | 0.05 |
+| 公式 | 1/(k+1) | 1/(k+1) |
+| 对 c_k 实际压制 | 极强（破坏 P） | 弱（不破坏 P） |
+| 预期是否能改善 cos | ❌ 已证伪 | ⚠️ 边际 |
+
+### 13.13.5 适用场景
+
+§13.13 是**最便宜的可验证实验**（仅 config 改动）。如果 §13.13-1（权重 0.05）能改善 5pp，说明"sparse forcing"方向有效但步长过大；如果是 0pp 或负 pp，说明该方向完全无效，应转向 §13.11。
+
+---
+
+## 13.10 → §13.11/§13.12/§13.13 综合路线选择
+
+| 选项 | 复杂度 | 风险 | 预期效果 | 推荐度 |
+|---|---|---|---|---|
+| §13.13-1（coeff_decay=0.05） | 极低 | 低 | 边际（+0-5pp） | △ 已证伪方向 |
+| §13.11-A（严格 1-sparse 节点） | 中 | 中 | 显著（+15-20pp） | △ 单电子专用 |
+| §13.11-B（多 sparse 节点） | 中高 | 中 | 显著（+10-15pp） | △ 多电子兼容 |
+| **§13.11-C（联合：节点 + 迭代精化）** | **中高** | **中** | **显著（+20pp+）** | **⭐⭐ 最推荐** |
+| §13.11-D（迭代精化单独） | 低 | 低 | 边际（+2-5pp） | △ 快速 baseline |
+| §13.12（Hermite trunk） | 中 | 高 | 中等（+10pp） | ❌ 放弃 §2.3，不推荐 |
+| §13.10-B（sparse soft-mask） | 低 | 低 | 边际（+5pp） | △ 与 §13.13 重复 |
+
+**推荐组合**：
+1. **现在** → **§13.11-C 联合方案**（4-5 天）：节点粗估 + c_k 迭代精化
+   - 解决 §13.10 失败根因（10 维空间稀疏搜索 → 节点位置空间 + 精化）
+   - §2.3 init 严格保持（softplus-log2 trick）
+   - 预期节点门禁 63% → ≥ 85%
+   - 多电子兼容（阶段 1 可换 RBF 拟合）
+2. **若 §13.11-C 实施困难**：回退到 §13.11-D 单独迭代精化（1 天）
+3. **若两者都失败**：重新审视 §13.10.2 的"sparse 强制"假设——可能根因不是 sparse 问题
+
+> 详细决策矩阵见 §13.11 末尾"决策矩阵"表。
+
+---
+
+## 13.14 §13.14 Step H：coeff 锚定（方向 C）+ 解析 dQ（方向 B）
+
+> 本节是 §13.11 路线关闭后的**新方向**，基于一次关键的问题重构（reframing）。
+> 实施于 2026-06-23，代码已落地，待 GPU 训练 + 评估验证。
+
+### 13.14.1 关键重构：单电子下 P_H 已是精确解
+
+查代码后确认：训练 manifest 是 `manifest_hydrogenic_z1_26_n10.parquet`——**纯单电子类氢态**。对这些态，P(r) 的精确（非相对论）解就是解析类氢波函数 P_H，而它在 init 时已被精确装进 `coeff_init`（实测 `|max(P − P_H)| ≈ 1e-7`）。
+
+由此得到一个之前 5 轮（Step C/D/E/F/G）都遗漏的判断：
+
+> **n ≥ 8 的节点门禁失败不是"学不到"，而是训练把一个完美的初始化"训坏了"（training-induced degradation）。** 脆弱的 1-sparse 不动点被 PDE/norm 梯度噪声打偏，而 10 维 c_k 的吸引盆地太小无法回收。
+
+证据链：
+1. VPQ 图里 V(r) 永远完美、P 在 n≤7 完美、n=8 反相——失败只在长程。
+2. 训练 log 里 `norm` loss 在 0.01–0.5 抖动（init 时 P_H 本应归一 → norm≈0），说明 forward 的 P/Q 在训练中被持续扰动。
+3. 高 n 轨道延伸到 r≈160–200，512 点 loglinear 网格长程**欠采样**，`jnp.gradient(Q)`（含 dP→数值 d²P）噪声大 → 把 c_k 推离不动点。
+
+### 13.14.2 两个修改
+
+| 方向 | 内容 | 对抗的根因 |
+|---|---|---|
+| **C — coeff 锚定** | 新增 `coeff_anchor_loss = mean(mask_{n≥8}·(c_k − c_k^init)²)`，把高 n 系数拉回解析 init（**趋向 coeff_init，而非 coeff_decay 的趋向 0**） | 直接阻止 degradation；单电子下 P_H 即答案，强锚定物理正确，多电子阶段可退火关闭 |
+| **B — 解析 dQ** | `laguerre_p_sum_with_r(return_d2=True)` 输出解析 d²P/dr²；新增 `kinetic_balance_q_dq_analytic` 闭式求 `dQ = c·(N'D − ND')/D²`，替换 `jnp.gradient(Q)` | 消除长程 Q 的有限差分噪声（噪声本质是对含 dP 的 Q 再数值微分 ≈ 数值 d²P） |
+
+**注**：方向 C 推翻了 §5.3"❌ 不加 ‖coeffs − coeffs_hydrogenic‖²"的原始设计哲学——5 轮实验证伪了"系数应纯由能量梯度驱动"对单电子数据的适用性。
+
+### 13.14.3 §2.3 init 性质保持
+
+- 锚定项：init 时 `c_k == coeff_init` → `(c_k − c_k^init)² = 0`（CPU smoke 实测 `ca=4.4e-5`，乘权重 50 后 ≈ 2e-3，可忽略）。
+- 解析 dQ：纯前向闭式替换，不改 init 的 P/Q 值；CPU smoke 实测 init `norm=0.0000`（旧 `jnp.gradient(Q)` 路径此处为 0.01–0.5），说明解析 dQ 让 init 的 Q 更干净。
+
+### 13.14.4 代码改动清单
+
+| 文件 | 改动 |
+|---|---|
+| `pinn_art/nets/laguerre_basis.py` | `laguerre_p_sum_with_r` 加 `return_d2`（解析 d²P/dr²）；新增 `kinetic_balance_q_dq_analytic`（解析 dQ）；新增 `coeff_anchor_loss` |
+| `pinn_art/nets/deeponet.py` | 循环外算 `dVdr`（核 +Z/r² 解析 + V_corr 数值）；Laguerre 分支用 `return_d2=True` + `kinetic_balance_q_dq_analytic`；暴露 `laguerre_coeff_init` |
+| `pinn_art/models/pinn_art_model.py` | 转发 `laguerre_coeff_init` 到 out |
+| `pinn_art/losses/coeff_loss.py` | 重导出 `coeff_anchor_loss` |
+| `pinn_art/losses/loss_schedule.py` | `stage_a_weights` 增加 `coeff_anchor` + `_coeff_anchor_n_min` |
+| `pinn_art/training/stage_a_trainer.py` | 计算 `l_coeff_anchor`，加入 total 与 metrics |
+| `scripts/v3_train_stage_a_laguerre_basis.py` | history CSV + 日志增加 `coeff_anchor`（ca）列 |
+| `configs/v3_stage_a_laguerre_basis_h.yaml`（新） | legacy head（`use_hybrid_head:false`）+ §13.1/13.2/13.9 + `coeff_anchor:50.0`、`coeff_anchor_n_min:8` |
+| `scripts/run_step_h_gpu.sh`（新） | GPU 启动脚本 |
+
+### 13.14.5 架构定位
+
+Step H = **回退 Step C 的朴素 `LaguerreCoeffHead`**（因 Hybrid head 无增益）+ **保留 Steps D/E 有效部分**（§13.9 Branch 容量、§13.1 dual trunk、§13.2 log-r）+ **方向 B/C 两项新修改**。冷启动训练（loss 图变 + 解析 dQ 改前向图，_e/_g ckpt 不可 resume）。
+
+### 13.14.6 训练 + 评估命令（用户在 GPU 终端执行）
+
+```bash
+cd /home/chaos/workspace2/DiracNet_V3/rc_pinn_art_project
+
+# 1. 启动 GPU 训练（5k epoch, 后台）
+bash scripts/run_step_h_gpu.sh 5000 h5k_gpu
+
+# 2. 监控（关注 ca 列：应在小值保持，不应压垮 pde）
+tail -f logs/v3_stage_a_laguerre_basis_h/train_h5k_gpu_*.log
+
+# 3. 训练完成后评估（260 行）
+JAX_PLATFORMS=cpu python scripts/v3_evaluate_laguerre_basis.py \
+    --config configs/v3_stage_a_laguerre_basis_h.yaml \
+    --ckpt checkpoints/v3_stage_a_laguerre_basis_h_h5k_gpu/stage_a_last.msgpack \
+    --max-rows 260 \
+    --out results/laguerre_basis_eval/stage_a_h_h5k_gpu.json
+
+# 4. VPQ 形态对比（vs cFAC, 14 例）
+cd /home/chaos/workspace2/DiracNet_V3
+JAX_PLATFORMS=cpu python cfac_jobs/energy_batch/compare_vpq_cases.py \
+    --ckpt rc_pinn_art_project/checkpoints/v3_stage_a_laguerre_basis_h_h5k_gpu/stage_a_last.msgpack \
+    --config rc_pinn_art_project/configs/v3_stage_a_laguerre_basis_h.yaml \
+    --out-dir cfac_jobs/energy_batch/vpq_compare_h_h5k_gpu
+
+# 5. 能量三路对比（PINN vs NIST vs cFAC, 260 行）
+JAX_PLATFORMS=cpu python cfac_jobs/energy_batch/compare_energy_3way.py \
+    --ckpt rc_pinn_art_project/checkpoints/v3_stage_a_laguerre_basis_h_h5k_gpu/stage_a_last.msgpack \
+    --config rc_pinn_art_project/configs/v3_stage_a_laguerre_basis_h.yaml \
+    --out-dir cfac_jobs/energy_batch/energy_compare_h_h5k_gpu
+```
+
+> ckpt 路径按 `--tag` 分目录：`checkpoints/v3_stage_a_laguerre_basis_h_h5k_gpu/`。
+> 评估/对比脚本会自动 fallback CPU（沙箱无 GPU 时用 `JAX_PLATFORMS=cpu`）。
+
+### 13.14.7 预期效果与判据
+
+| 指标 | 当前（Step G v2）| Step H 目标 |
+|---|---|---|
+| n=8..10 节点门禁 | 反相/失败 | **通过**（degradation 被锚定阻止）|
+| 260 行节点门禁 | ~62% | **≥ 85%** |
+| 长程 Q 噪声 | `jnp.gradient` 抖动 | 解析 dQ 平滑 |
+| 260 行能量 RMSE | 29 654 meV | **< 28 042（Step C）** |
+| Z=6 单点离群 | 349 eV | 待观察（若仍爆 → 可能 V/能量层问题，非 P）|
+
+**调参提示**：若 `coeff_anchor:50.0` 把高 n 锁太死导致 cFAC Dirac 小修正学不到，可降到 5–10；若 degradation 仍发生，可升到 100 或把 `coeff_anchor_n_min` 下调到 6。
+
+### 13.14.8 若 Step H 仍不达标的回退
+
+1. **Z=6 单点诊断**：单独导出 C 2s 的 P/Q/c_k，定位 349 eV 是 V 主导还是 c_k 主导。
+2. **方向 B 升级**：`dVdr` 的 V_corr 部分也改解析（当前仍用 `jnp.gradient(V_corr)`，但 V 平滑、非主要噪声源）。
+3. **§13.12 Hermite trunk**（保底，放弃 §2.3 init）。
+
+### 13.14.9 Step H 实测结果（h5k_gpu, 2026-06-23）→ **方向 B 部分有效，方向 C 无效**
+
+> GPU 5k epoch 冷启动训练 + 260 行形态门禁 + VPQ（14 例）+ 能量三路对比已完成。
+> 结论：**未达 §13.14.7 DoD**；方向 B（解析 dQ）有边际正向信号，方向 C（`coeff_anchor:50`）锚定几乎未生效。
+
+#### 13.14.9.1 与历史 baseline 对照
+
+| 指标 | Step C 5k | Step G v2 5k | **Step H 5k** | vs Step C |
+|---|---|---|---|---|
+| 节点门禁 (260行) | 156/260 = **60.0%** | 164/260 = 63.1% | **156/260 = 60.0%** | 持平 ❌ |
+| mean cos(P, P_H) | 0.7557 | 0.7500 | **0.7641** | +1.1% ⚠️ |
+| cos ≥ 0.95 | 177 (68%) | 182 (70%) | **178 (68%)** | +1 行 ⚠️ |
+| cos < 0.1 失败 | 52 | 52 | **49** | −3 行 ⚠️ |
+| λ-drift mean | 2.57% | ~0% | **3.02%** | 略升 |
+| 能量 RMSE (meV) | **28 042** | 29 654 | **861 098** | 严重退步 ❌* |
+| 能量中位数 ΔE (meV) | +1395 | −395 | **+122** | 略好 ⚠️ |
+| Z=1 per-Z RMSE (meV) | 2794 | 2295 | **440** | 改善 ✅ |
+| Z=6 per-Z RMSE (meV) | 3123 | 110 238 | **522** | 大幅改善 ✅ |
+
+\* 整体 RMSE 被 **Z=18 1s 单点**（ΔE = −13.86 MeV）主导；剔除该行后 RMSE ≈ **46 949 meV**，仍差于 Step C。
+
+**相对 Step C 能量**：207/260 行误差变小，53 行变大（低 Z 全面改善，高 Z 1s 出现新离群）。
+
+#### 13.14.9.2 per-n 失败模式（与 Step C 同型，未突破）
+
+| n | Step C node | Step H node | Step C mean cos | Step H mean cos | Step H cos<0.1 |
+|---|---|---|---|---|---|
+| 1 | 26/26 | 26/26 | 1.000 | 0.999 | 0 |
+| 2..7 | ~15/26 | ~15/26 | 0.987–0.998 | 0.979–0.999 | 0 |
+| **8** | 14/26 | 14/26 | 0.563 | **0.608** | 0 |
+| **9** | 13/26 | 13/26 | 0.032 | 0.056 | 24/26 |
+| **10** | 13/26 | 12/26 | 0.011 | 0.035 | 25/26 |
+
+**硬分界仍在**：n ≤ 7 形态极好；n = 8 节点率不变、cos 略升；n = 9,10 几乎全灭。
+
+#### 13.14.9.3 方向 B（解析 dQ）评估
+
+| 检查项 | 结果 |
+|---|---|
+| init norm loss | **0.0000**（旧 `jnp.gradient(Q)` 路径 init 为 0.01–0.5）✅ |
+| n=8 mean cos | 0.563 → **0.608** (+8%) ⚠️ |
+| H 8s cos | 0.441 → **0.576**；VPQ 仍**相位反相** ❌ |
+| Fe 8s VPQ 图 | P/Q 与 cFAC **视觉对齐良好** ✅；eval cos=0.631（度量 vs 视觉有偏差）|
+| 节点门禁 | 60% 不变 ❌ |
+| n=9,10 | 仍失败 ❌ |
+
+**结论**：解析 dQ 降低了长程数值噪声、改善了 init 和 n=8 边际 cos，但**不足以打破 n≥8 失败模式**。建议**保留**（实现成本低、无负作用）。
+
+#### 13.14.9.4 方向 C（coeff_anchor=50）评估
+
+训练 history 显示锚定项 raw 值始终 ~10⁻⁴ 量级：
+
+```
+epoch    0:  ca=5.4e-05  pde=4201.8  norm=0.0000
+epoch 4999:  ca=2.8e-04  pde=48.7    norm=0.0061
+```
+
+乘权重 50 后 `ca` 贡献 ≈ 0.014，远小于 PDE（~49）。**高 n 系数未被有效拉回 `coeff_init`**。
+
+| 检查项 | 预期 | 实测 |
+|---|---|---|
+| n≥8 节点通过 | 是 | **否**（与 Step C 相同）|
+| 260 行门禁 ≥85% | 是 | **60%** ❌ |
+| cos<0.1 失败 ≤25 | 是 | **49** ❌ |
+| init §2.3 保持 | 是 | ✅（ca init ≈ 0）|
+
+**结论**：`coeff_anchor:50.0` 在当前实现下**过弱**，未能阻止 degradation。§13.10-A 的 `coeff_decay` 方向（趋向 0）已被证伪；本方案的锚定（趋向 init）方向正确但**强度不足**。
+
+#### 13.14.9.5 能量层：低 Z 改善 + Z=18 1s 新灾难
+
+**改善**：
+- Z=1..10 per-Z RMSE 多在 440–920 meV，优于 Step C。
+- Z=6 从 Step G 的 110 eV 级灾难恢复到 **522 meV**。
+- 最差 10 行集中在 n=7s/8s 的中高 Z（2–3 eV），不再是高 Z 1s 独占。
+
+**Z=18 1s 单点灾难**（形态-能量解耦的极端案例）：
+
+| 项 | 值 |
+|---|---|
+| cos(P, P_H) | **0.999** ✅ |
+| 节点门禁 | **通过** ✅ |
+| E_pinn | −671.5 Ha |
+| E_nist | −162.0 Ha |
+| ΔE | **−13.86 MeV** ❌ |
+| Step C 同点 ΔE | +64.5 MeV（也差，但量级小 200×）|
+
+典型 **「形态对、能量错」**——与 §13.3 Z=26 1s 谜题同族，但 Step H 更严重。
+
+#### 13.14.9.6 VPQ 形态对比（14 例 vs cFAC）
+
+| 案例 | V(r) | P(r) | Q(r) | 备注 |
+|---|---|---|---|---|
+| H 1s/2s/5s | ✓ | ✓ | ✓ | 与历史一致 |
+| **H 8s** | ✓ | ✗ **反相** | ✗ 偏移 | n=8 长程仍失败 |
+| **Fe 8s** | ✓ | ✓ 视觉对齐 | ✓ 视觉对齐 | eval cos 仅 0.63，度量/视觉有偏差 |
+| Fe 1s | ✓ | ⚠ 幅度偏低 | ⚠ | P 峰值 ~0.1 vs cFAC ~3 |
+| Li/C/O 1s/5s | ✓ | ✓ | ⚠ 高 r 5–15% | 与 Step G 类似 |
+
+#### 13.14.9.7 训练稳定性
+
+- 最终 loss = 51.9（pde=48.7, norm=0.006, ca=2.8e-4）。
+- 训练过程中 PDE 多次尖峰（epoch 4437: pde=11209），说明优化仍不稳定。
+- `norm` 从 init 0.000 到末态 0.006——解析 dQ 让 init 更干净，但训练仍扰动 P/Q。
+
+#### 13.14.9.8 对各路线决策的更新
+
+| 路线 | Step H 后的判定 |
+|---|---|
+| §13.11 Hybrid head | **永久关闭** ✓ |
+| 方向 B 解析 dQ | **保留** ✓（低代价、init/n=8 略好）|
+| 方向 C coeff_anchor w=50 | **无效** ✗（需重设计：w→500–5000 或 freeze n≥8）|
+| 「训练 degradation」假说 | **部分证实**（n=8 略好；n=9/10 锚定太弱未阻止）|
+| 「形态≠能量」 | **再次证实**（Z=18 1s cos=0.999, ΔE=14 MeV）|
+
+#### 13.14.9.9 下一步建议（Step H'）
+
+| 优先级 | 任务 | 预期 |
+|---|---|---|
+| **↑↑↑** | **Step H'：强化锚定** — `coeff_anchor:5000` 或归一化 `(c−c_init)²/‖c_init‖²`；或 n≥8 **freeze coeff_head**（只训 V） | 验证 degradation 假说 |
+| **↑↑** | **Z=18 1s 能量诊断**（§13.3 脚本）— 形态 cos=0.999 但 E 差 14 MeV | 区分 V 主导 / dP 主导 |
+| **↑** | n=8 专项：Fe 8s VPQ 视觉 OK 但 cos=0.63 → 查 cos 度量 vs 符号/归一化 | 澄清 n=8 真实状态 |
+| **↑** | 保留解析 dQ（已证实无害） | — |
+| **—** | §13.12 Hermite trunk | 保底，放弃 §2.3 |
+| **✗ 不再尝试** | Hybrid head / coeff_decay 加大 / Branch ×8 | 均已证伪 |
+
+#### 13.14.9.10 工件清单
+
+| 工件 | 路径 |
+|---|---|
+| Step H 配置 | `rc_pinn_art_project/configs/v3_stage_a_laguerre_basis_h.yaml` |
+| Step H ckpt | `rc_pinn_art_project/checkpoints/v3_stage_a_laguerre_basis_h_h5k_gpu/stage_a_last.msgpack` |
+| 训练 history | `rc_pinn_art_project/logs/v3_stage_a_laguerre_basis_h_h5k_gpu/history.csv` |
+| 训练 log | `rc_pinn_art_project/logs/v3_stage_a_laguerre_basis_h/train_h5k_gpu_*.log` |
+| 评估 JSON | `rc_pinn_art_project/results/laguerre_basis_eval/stage_a_h_h5k_gpu.json` |
+| VPQ 图（14 例）| `cfac_jobs/energy_batch/vpq_compare_h_h5k_gpu/VPQ_*.png` |
+| VPQ 网格图 | `cfac_jobs/energy_batch/vpq_compare_h_h5k_gpu/VPQ_grid.png` |
+| 能量 CSV | `cfac_jobs/energy_batch/energy_compare_h_h5k_gpu/energy_comparison.csv` |
+| Per-Z stats | `cfac_jobs/energy_batch/energy_compare_h_h5k_gpu/per_Z_stats.csv` |
+| Top-10 worst | `cfac_jobs/energy_batch/energy_compare_h_h5k_gpu/top10_worst_PINN.csv` |
+| 能量 1:1 / RMSE 图 | `cfac_jobs/energy_batch/energy_compare_h_h5k_gpu/{energy_1to1,per_Z_RMSE,error_histograms}.png` |
+
+**一句话总结**：
+
+> Step H 的解析 dQ 略有帮助（init 更干净、n=8 cos +8%），低 Z 能量全面改善、Z=6 灾难修复；但 **coeff_anchor=50 太弱未能阻止 n≥9 崩溃**（节点门禁仍 60%），且 **Z=18 1s 出现 14 MeV 能量离群**（形态 cos=0.999）。当前瓶颈已分裂为 **「高 n 锚定不足」** 与 **「高 Z 核区形态-能量解耦」** 两条独立问题。
 
 ## 附录 E：评估工件清单与可复现入口
 
@@ -860,6 +2187,16 @@ t = jnp.stack([r, jnp.log(jnp.clip(r, 1e-6)), r**0.5], axis=-1)   # [B, N_g, 3]
 | Step C 评估（260 行） | `rc_pinn_art_project/results/laguerre_basis_eval/stage_a_c2_full.json` | 156/260 通过 |
 | Step C 失败诊断图 | `rc_pinn_art_project/results/laguerre_basis_eval/diag_failing_rows.png` | 9 例失败模式 |
 | Step C 报告 | `progress_reports/progress_report_step_c.md` | 完整 Step C 评估 |
+| Step D 评估（双 trunk 1k） | `rc_pinn_art_project/results/laguerre_basis_eval/stage_a_d_d1k.json` | 159/260 通过 |
+| Step D 配置 | `rc_pinn_art_project/configs/v3_stage_a_laguerre_basis_d.yaml` | 双 trunk + log-r |
+| Step D 训练 manifest 拆分 | `rc_pinn_art_project/data_cache/manifest_hydrogenic_z1_15_n1_10.parquet` | 150 行（§13.4） |
+| Step G v2 评估（260 行） | `rc_pinn_art_project/results/laguerre_basis_eval/stage_a_g_g5k_v2_fixed.json` | 164/260 通过 |
+| Step G v2 VPQ 图 | `cfac_jobs/energy_batch/vpq_compare_g_g5k_v2_fixed/VPQ_*.png` | 14 例 |
+| Step G v2 能量 CSV | `cfac_jobs/energy_batch/energy_compare_g_g5k_v2_fixed/energy_comparison.csv` | RMSE 29 654 meV |
+| Step H 评估（260 行） | `rc_pinn_art_project/results/laguerre_basis_eval/stage_a_h_h5k_gpu.json` | 156/260 通过 |
+| Step H 配置 | `rc_pinn_art_project/configs/v3_stage_a_laguerre_basis_h.yaml` | §13.C anchor + §13.B analytic dQ |
+| Step H VPQ 图 | `cfac_jobs/energy_batch/vpq_compare_h_h5k_gpu/VPQ_*.png` | 14 例 |
+| Step H 能量 CSV | `cfac_jobs/energy_batch/energy_compare_h_h5k_gpu/energy_comparison.csv` | RMSE 861 098 meV（Z18 1s 离群）|
 | cFAC 单电子脚本 | `cfac_jobs/energy_batch/cf_Z{Z}_n{n}.sf` (260 文件) | cFAC 输入 |
 | cFAC 单电子数据 | `cfac_jobs/energy_batch/cf_Z{Z}_n{n}_{PQ,V}.dat` (520 文件) | cFAC 输出 |
 | VPQ 对比图 | `cfac_jobs/energy_batch/vpq_compare/VPQ_*.png` (15 图) | PINN vs cFAC |

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import jax
 import jax.numpy as jnp
 import numpy as np
@@ -54,10 +56,34 @@ class PinnArtModel(nn.Module):
     learn_lambda: bool = True
     perturb_scale_P: float = 0.05
     perturb_scale_Q: float = 0.05
+    # --- §13.1 / §13.2 of 17_generalized_laguerre_basis.md ---
+    use_log_r_input: bool = False
+    log_r_scale: float = 1.0
+    use_dual_trunk: bool = False
+    d_trunk_high: int = 128
+    omega_0_high: float = 60.0
+    lambda_split: float = 4.0
+    gate_temperature: float = 2.0
+    # --- §13.9 Branch Capacity (Step E) ---
+    coeff_d_hidden: int = 64
+    lambda_d_hidden: int = 32
+    q_corr_d_hidden: int = 64
+    # --- §13.11-C Joint scheme (Step G) ---
+    use_hybrid_head: bool = False   # when True, replace LaguerreCoeffHead with HybridLaguerreHead
+    nodes_table_path: str = "data_cache/laguerre_nodes_z1_26_n1_10.parquet"
+    hybrid_d_hidden_node: int = 64   # Stage 1 node MLP hidden width
+    hybrid_d_hidden_ref: int = 32    # Stage 2 refinement MLP hidden width
+    hybrid_n_iter: int = 3           # refinement iterations
+    hybrid_step_size: float = 0.1    # per-iteration c_k update step
     # Analytic Laguerre init is computed per-batch inside
     # `DeepONetDirac.__call__` from the (batched) (Z, n, l) so it follows
     # whatever row the manifest feeds (Round-3 fix v2).  No model-level
     # constants are needed.
+    #
+    # §13.11-C (round-2 fix): the analytic node table is loaded by
+    # `collate_batches` (host-side) and stored in `batch['analytic_nodes']`.
+    # The model itself does NOT load the table (no `setup()` is needed).
+    # This keeps the JIT region free of Python-side table lookups.
 
     @nn.compact
     def __call__(
@@ -88,6 +114,18 @@ class PinnArtModel(nn.Module):
             n_principal = jnp.maximum(jnp.abs(kappa), 1)
             l_orbital = jnp.where(kappa < 0, -kappa - 1, kappa)
 
+        # §13.11-C: analytic Laguerre node positions [B, N_orb, K_max] are
+        # looked up host-side in `collate_batches` and passed in as
+        # `batch['analytic_nodes']`.  This keeps the JIT region free of
+        # Python-side table lookups.  When `use_hybrid_head` is off, we
+        # still need a key for the call signature; pass zeros.
+        if "analytic_nodes" in batch:
+            analytic_nodes = batch["analytic_nodes"]
+        else:
+            analytic_nodes = jnp.zeros(
+                (Z.shape[0], self.n_orb_max, self.K_max), dtype=jnp.float32
+            )
+
         # Stage A Round 2 (Round-3 fix v2): per-batch analytic Laguerre
         # init is computed inside `DeepONetDirac.__call__` from the
         # (batched) (Z, n, l) — so the very first forward pass
@@ -107,6 +145,22 @@ class PinnArtModel(nn.Module):
             learn_lambda=self.learn_lambda,
             perturb_scale_P=self.perturb_scale_P,
             perturb_scale_Q=self.perturb_scale_Q,
+            use_log_r_input=self.use_log_r_input,
+            log_r_scale=self.log_r_scale,
+            use_dual_trunk=self.use_dual_trunk,
+            d_trunk_high=self.d_trunk_high,
+            omega_0_high=self.omega_0_high,
+            lambda_split=self.lambda_split,
+            gate_temperature=self.gate_temperature,
+            coeff_d_hidden=self.coeff_d_hidden,
+            lambda_d_hidden=self.lambda_d_hidden,
+            q_corr_d_hidden=self.q_corr_d_hidden,
+            # §13.11-C
+            use_hybrid_head=self.use_hybrid_head,
+            hybrid_d_hidden_node=self.hybrid_d_hidden_node,
+            hybrid_d_hidden_ref=self.hybrid_d_hidden_ref,
+            hybrid_n_iter=self.hybrid_n_iter,
+            hybrid_step_size=self.hybrid_step_size,
         )
 
         z_eff_orb = None
@@ -120,6 +174,7 @@ class PinnArtModel(nn.Module):
         raw = net(
             branch_feat, t, r, dt_dr, kappa, orb_mask, Z,
             n_principal=n_principal, l_orbital=l_orbital, z_eff_orb=z_eff_orb,
+            analytic_nodes=analytic_nodes,
         )
 
         if self.apply_lowdin:
@@ -150,6 +205,7 @@ class PinnArtModel(nn.Module):
             # Stage A Round 2: forward Laguerre-head outputs through to
             # the trainer (consumed by coeff_loss / q_corr_loss).
             "laguerre_coeffs": raw.get("laguerre_coeffs"),
+            "laguerre_coeff_init": raw.get("laguerre_coeff_init"),
             "laguerre_lambdas": raw.get("laguerre_lambdas"),
             "laguerre_lambda_init": raw.get("laguerre_lambda_init"),
             "laguerre_deltaQ": raw.get("laguerre_deltaQ"),
@@ -252,6 +308,26 @@ def build_model_and_params(cfg, grid: RadialGrid, key: jax.Array):
         learn_lambda=bool(getattr(model_cfg, "learn_lambda", True)),
         perturb_scale_P=float(getattr(model_cfg, "perturb_scale_P", 0.05)),
         perturb_scale_Q=float(getattr(model_cfg, "perturb_scale_Q", 0.05)),
+        # §13.1 / §13.2 of 17_generalized_laguerre_basis.md
+        use_log_r_input=bool(getattr(model_cfg, "use_log_r_input", False)),
+        log_r_scale=float(getattr(model_cfg, "log_r_scale", 1.0)),
+        use_dual_trunk=bool(getattr(model_cfg, "use_dual_trunk", False)),
+        d_trunk_high=int(getattr(model_cfg, "d_trunk_high", 128)),
+        omega_0_high=float(getattr(model_cfg, "omega_0_high", 60.0)),
+        lambda_split=float(getattr(model_cfg, "lambda_split", 4.0)),
+        gate_temperature=float(getattr(model_cfg, "gate_temperature", 2.0)),
+        # §13.9 of 17_generalized_laguerre_basis.md
+        coeff_d_hidden=int(getattr(model_cfg, "coeff_d_hidden", 64)),
+        lambda_d_hidden=int(getattr(model_cfg, "lambda_d_hidden", 32)),
+        q_corr_d_hidden=int(getattr(model_cfg, "q_corr_d_hidden", 64)),
+        # §13.11-C of 17_generalized_laguerre_basis.md
+        use_hybrid_head=bool(getattr(model_cfg, "use_hybrid_head", False)),
+        nodes_table_path=str(getattr(model_cfg, "nodes_table_path",
+                                     "data_cache/laguerre_nodes_z1_26_n1_10.parquet")),
+        hybrid_d_hidden_node=int(getattr(model_cfg, "hybrid_d_hidden_node", 64)),
+        hybrid_d_hidden_ref=int(getattr(model_cfg, "hybrid_d_hidden_ref", 32)),
+        hybrid_n_iter=int(getattr(model_cfg, "hybrid_n_iter", 3)),
+        hybrid_step_size=float(getattr(model_cfg, "hybrid_step_size", 0.1)),
     )
     batch = _dummy_batch(int(getattr(model_cfg, "n_orb_max", 16)), int(getattr(model_cfg, "n_csf_max", 32)))
     # When the Laguerre basis is on, populate the dummy shell_table with

@@ -211,7 +211,14 @@ def main():
 
     n_rows = min(args.max_rows, len(ds))
     for i in range(n_rows):
-        batch = collate_batches([ds[i]], n_csf_max=int(cfg.model.n_csf_max))
+        batch = collate_batches(
+            [ds[i]],
+            n_csf_max=int(cfg.model.n_csf_max),
+            k_max=int(getattr(cfg.model, "K_max", 9)),
+            build_nodes=bool(getattr(cfg.model, "use_hybrid_head", False)),
+            nodes_table_path=str(getattr(cfg.model, "nodes_table_path",
+                                         "data_cache/laguerre_nodes_z1_26_n1_10.parquet")),
+        )
         out = model.apply(params, batch, grid, train=False, return_ci=False)
 
         # Reference similarity vs analytic hydrogenic.  Use

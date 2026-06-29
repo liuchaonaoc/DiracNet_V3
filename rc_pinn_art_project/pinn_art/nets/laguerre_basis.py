@@ -31,13 +31,19 @@ Design notes
 from __future__ import annotations
 
 from functools import partial
+from pathlib import Path
 
 import jax
 import jax.numpy as jnp
+import numpy as np
 from flax import linen as nn
+from jax.scipy.special import gammaln
 
 from ..constants import C_LIGHT
 from ..physics.hydrogenic import _laguerre_generalized_stack
+
+
+_GL64_X, _GL64_W = np.polynomial.laguerre.laggauss(64)
 
 
 # --------------------------------------------------------------------------- #
@@ -235,7 +241,8 @@ def laguerre_p_sum_with_r(
     alpha: jnp.ndarray,
     perturb_corr: jnp.ndarray | None = None,
     perturb_scale: float = 0.05,
-) -> tuple[jnp.ndarray, jnp.ndarray]:
+    return_d2: bool = False,
+):
     """Convenience: compute envelope + Laguerre stack inside, return P, dP/dr.
 
     Shapes:
@@ -245,7 +252,22 @@ def laguerre_p_sum_with_r(
         kappa: [B, N_orb]
         alpha: [B, N_orb]  (= 2|kappa|)
 
-    Returns P, dP_dr: [B, N_orb, N_g]
+    Returns P, dP_dr: [B, N_orb, N_g].
+
+    If ``return_d2=True`` also returns the analytic second derivative
+    ``d²P/dr²`` (same shape) — used by the §13.B analytic kinetic-balance
+    dQ path to avoid the long-range noise of ``jnp.gradient(Q)``.
+
+    Analytic d²P/dr² (perturb_corr ignored; the Laguerre forward passes
+    ``perturb_corr=None``):
+
+        P        = env · P_core,           env = r^{|κ|} e^{-λr}
+        env'     = env·(|κ|/r − λ)
+        env''    = env·[(|κ|/r − λ)² − |κ|/r²]
+        P_core   = Σ c_k L_k^α(ρ),         ρ = 2λr
+        P_core'  = (2λ)  Σ c_k (−L_{k−1}^{α+1})
+        P_core'' = (2λ)² Σ c_k  L_{k−2}^{α+2}
+        P''      = env''·P_core + 2 env'·P_core' + env·P_core''
     """
     B, N_orb, _ = coeffs.shape
     N_g = r.shape[0]
@@ -293,7 +315,29 @@ def laguerre_p_sum_with_r(
         dP_core_dr = dP_core_dr * (1.0 + perturb_scale * perturb_corr)
 
     dP_dr = d_env * P_core + env * dP_core_dr
-    return P, dP_dr
+
+    if not return_d2:
+        return P, dP_dr
+
+    # --- Analytic second derivative d²P/dr² (§13.B) ----------------------
+    # env'' = env·[(|κ|/r − λ)² − |κ|/r²]
+    inv_r = 1.0 / r_safe[None, None, :]
+    fac = abs_kap[..., None] * inv_r - lam            # (|κ|/r − λ)
+    d2_env = env * (fac * fac - abs_kap[..., None] * inv_r * inv_r)
+
+    # P_core'' = (2λ)²·Σ c_k L_{k−2}^{α+2};  shift L^{α+2} stack by 2 in k.
+    alpha_p2 = alpha + 2.0
+    L_dalpha2 = _laguerre_generalized_stack(rho, alpha_p2, max_k=K_p1 - 1)
+    L_dalpha2 = jnp.transpose(L_dalpha2, (1, 2, 0, 3))   # [B, N_orb, K_p1, N_g]
+    zeros_2 = jnp.zeros_like(L_dalpha2[..., :2, :])
+    L_km2_a2 = jnp.concatenate([zeros_2, L_dalpha2[..., :-2, :]], axis=-2)
+    d2P_core_drho2 = jnp.einsum("bok,bokg->bog", coeffs, L_km2_a2)
+    d2P_core_dr2 = d2P_core_drho2 * (2.0 * lam) * (2.0 * lam)
+    if perturb_corr is not None:
+        d2P_core_dr2 = d2P_core_dr2 * (1.0 + perturb_scale * perturb_corr)
+
+    d2P_dr2 = d2_env * P_core + 2.0 * d_env * dP_core_dr + env * d2P_core_dr2
+    return P, dP_dr, d2P_dr2
 
 
 # --------------------------------------------------------------------------- #
@@ -342,6 +386,65 @@ def kinetic_balance_q_with_corr(
     return Q, dQ
 
 
+def kinetic_balance_q_dq_analytic(
+    P: jnp.ndarray,
+    dPdr: jnp.ndarray,
+    d2Pdr2: jnp.ndarray,
+    V: jnp.ndarray,
+    dVdr: jnp.ndarray,
+    kappa: jnp.ndarray,
+    r_grid: jnp.ndarray,
+    deltaQ: jnp.ndarray | None = None,
+    ddeltaQ: jnp.ndarray | None = None,
+    perturb_scale_Q: float = 0.05,
+    c: float = C_LIGHT,
+) -> tuple[jnp.ndarray, jnp.ndarray]:
+    """§13.B: kinetic-balance Q **and** its analytic derivative dQ/dr.
+
+    This removes the dominant long-range noise of ``jnp.gradient(Q)`` which,
+    by numerically differentiating a quantity that already contains dP/dr,
+    effectively computes d²P/dr² by finite differences — exactly where the
+    high-n radial oscillations (r ~ n²/Z) are under-resolved on the
+    loglinear grid.
+
+        Q_skel = c·N/D,    N = dP + (κ/r)·P,   D = 2c² − V
+        N'     = d²P + (κ/r)·dP − (κ/r²)·P
+        D'     = −dV/dr
+        Q_skel'= c·(N'·D − N·D') / D²
+        Q      = Q_skel + s·δQ
+        Q'     = Q_skel' + s·δQ'
+
+    Shapes:
+        P, dPdr, d2Pdr2 : [B, N_orb, N_g]
+        V, dVdr         : [B, N_g]
+        kappa           : [B, N_orb]
+        deltaQ, ddeltaQ : [B, N_orb, N_g] or None
+    """
+    inv_r = 1.0 / jnp.clip(r_grid, 1e-8)              # [N_g]
+    kap = kappa[..., None]                            # [B, N_orb, 1]
+    kap_r = kap * inv_r[None, None, :]                # [B, N_orb, N_g]
+    kap_r2 = kap * (inv_r * inv_r)[None, None, :]
+
+    D = jnp.clip(2.0 * c * c - V[..., None, :], 1e-6, 1e10)   # [B,1,N_g]
+    Dp = -dVdr[..., None, :]                                  # [B,1,N_g]
+
+    N = dPdr + kap_r * P
+    Np = d2Pdr2 + kap_r * dPdr - kap_r2 * P
+
+    Q_skel = c * N / D
+    dQ_skel = c * (Np * D - N * Dp) / (D * D)
+
+    if deltaQ is not None:
+        Q = Q_skel + perturb_scale_Q * deltaQ
+        dQ = dQ_skel + (
+            perturb_scale_Q * ddeltaQ if ddeltaQ is not None else 0.0
+        )
+    else:
+        Q = Q_skel
+        dQ = dQ_skel
+    return Q, dQ
+
+
 # --------------------------------------------------------------------------- #
 #  Loss: L_q_residual = ∫ ρ·(Q − Q_skel)² dr  (Gemini §II.3)
 # --------------------------------------------------------------------------- #
@@ -380,16 +483,329 @@ def q_residual(
 
 
 # --------------------------------------------------------------------------- #
-#  Coefficient-decay regularizer  L_coeff_decay = mean(c² / k!)
+#  §13.11-C: Node-position features (for HybridLaguerreHead)
+# --------------------------------------------------------------------------- #
+#
+# Per `prompts/17_generalized_laguerre_basis.md` §13.11-C (Joint scheme:
+# node coarse estimation + c_k iterative refinement), the HybridLaguerreHead
+# consumes **node-position features** as additional input to its refinement
+# MLP.  The analytic nodes {r_1, ..., r_{n-1}} are precomputed at startup
+# from `data_cache/laguerre_nodes_z1_26_n1_10.parquet` and indexed at runtime
+# via `load_analytic_nodes()`.
+#
+# Init property (per §13.11-C.3): `softplus(x) - log(2)` is used so that at
+# init (kernel_init=zeros, bias_init=zeros) the network output for the
+# node deltas is exactly zero → learned node = analytic node → c_k_init = c_H
+# (per §2.3).
+# --------------------------------------------------------------------------- #
+
+
+def load_analytic_nodes_table(
+    path: str | Path,
+) -> dict[tuple[int, int, int], jnp.ndarray]:
+    """Load the precomputed Laguerre polynomial nodes (r_1, ..., r_{n-1})
+    for every (Z, n, l) in the manifest grid.  Returns a dict keyed by
+    (Z, n, l) → [K_max] array (zero-padded for unused slots).
+
+    Cache shape: dict with int keys and jnp.float32 values.  Loaded once at
+    init time and passed into HybridLaguerreHead as a static dict.
+    """
+    import pandas as pd  # local import to keep JAX-only deps clean
+
+    df = pd.read_parquet(path)
+    out: dict[tuple[int, int, int], jnp.ndarray] = {}
+    for _, row in df.iterrows():
+        Z = int(row["Z"]); n = int(row["n"]); l = int(row["l"])
+        K_max = int(row["K_max"])
+        r = jnp.asarray(
+            [row[f"r_node_{j}"] for j in range(K_max)], dtype=jnp.float32
+        )
+        out[(Z, n, l)] = r
+    return out
+
+
+def _lookup_analytic_nodes(
+    table: dict[tuple[int, int, int], jnp.ndarray],
+    Z_arr: jnp.ndarray,
+    n_arr: jnp.ndarray,
+    l_arr: jnp.ndarray,
+    K_max: int,
+) -> jnp.ndarray:
+    """Look up analytic node positions for a (batched) (Z, n, l) tensor.
+
+    Inputs:
+        Z_arr: [B, N_orb] int
+        n_arr: [B, N_orb] int
+        l_arr: [B, N_orb] int
+    Output:
+        r_nodes: [B, N_orb, K_max] float32 (zero-padded for invalid slots)
+    """
+    B = int(Z_arr.shape[0])
+    N_orb = int(Z_arr.shape[1])
+    out = jnp.zeros((B, N_orb, K_max), dtype=jnp.float32)
+    Z_np = np.asarray(Z_arr)
+    n_np = np.asarray(n_arr)
+    l_np = np.asarray(l_arr)
+    for b in range(B):
+        for a in range(N_orb):
+            Z = int(Z_np[b, a]); n = int(n_np[b, a]); l = int(l_np[b, a])
+            r = table.get((Z, n, l))
+            if r is None:
+                # Invalid slot (e.g. n <= l): leave zeros.
+                continue
+            out = out.at[b, a].set(r)
+    return out
+
+
+def nodes_to_laguerre_coeffs(
+    r_nodes: jnp.ndarray,
+    coeff_init: jnp.ndarray,
+    lambda_orbital: jnp.ndarray,
+    alpha_orbital: jnp.ndarray,
+    degree_orbital: jnp.ndarray,
+    K_max: int,
+) -> jnp.ndarray:
+    """Project node-defined polynomials back to generalized-Laguerre c_k.
+
+    For an orbital with degree m = n-l-1 and Laguerre argument rho = 2λr,
+
+        q(rho) = Π_i (rho - rho_i),  rho_i = 2λ r_i
+
+    satisfies L_m^alpha(rho) = (-1)^m / m! * q(rho) when rho_i are the
+    analytic roots.  We scale q so the active coefficient matches the
+    analytic `coeff_init[..., m]`, then project q onto {L_k^alpha}_{k=0..K}
+    with 64-point Gauss-Laguerre quadrature:
+
+        c_k = <q_scaled, L_k^alpha> / ||L_k^alpha||².
+
+    This makes node movement a direct physical path into P(r), instead of a
+    weak auxiliary feature consumed by a residual MLP.
+    """
+    dtype = coeff_init.dtype
+    K_max = int(K_max)
+    x = jnp.asarray(_GL64_X, dtype=dtype)     # [Q], weight e^{-x}
+    w = jnp.asarray(_GL64_W, dtype=dtype)     # [Q]
+
+    lam = jnp.maximum(lambda_orbital.astype(dtype), jnp.asarray(1e-8, dtype=dtype))
+    alpha = alpha_orbital.astype(dtype)
+    degree_i = jnp.clip(
+        jnp.round(degree_orbital).astype(jnp.int32), 0, K_max
+    )
+    degree = degree_i.astype(dtype)
+
+    # Convert r-nodes to roots in rho-space and build the monic polynomial.
+    rho_roots = 2.0 * lam[:, None] * r_nodes.astype(dtype)      # [B, K]
+    live = (
+        jnp.arange(K_max, dtype=dtype)[None, :] < degree[:, None]
+    )                                                          # [B, K]
+    factors = jnp.where(
+        live[:, :, None],
+        x[None, None, :] - rho_roots[:, :, None],
+        jnp.ones((1, 1, x.shape[0]), dtype=dtype),
+    )
+    monic_poly = jnp.prod(factors, axis=1)                     # [B, Q]
+
+    # Match the analytic coefficient magnitude at slot m.
+    k_idx = jnp.arange(K_max + 1, dtype=dtype)
+    active_mask = (k_idx[None, :] == degree_i[:, None]).astype(dtype)
+    active_coeff = jnp.sum(coeff_init * active_mask, axis=-1)  # [B]
+    sign = jnp.where((degree_i % 2) == 0, 1.0, -1.0).astype(dtype)
+    scale = active_coeff * sign * jnp.exp(-gammaln(degree + 1.0))
+    target_poly = scale[:, None] * monic_poly                  # [B, Q]
+
+    rho = jnp.broadcast_to(x[None, :], target_poly.shape)      # [B, Q]
+    Ls = _laguerre_generalized_stack(rho, alpha, max_k=K_max)  # [K+1, B, Q]
+
+    quad_weight = w[None, :] * jnp.power(jnp.maximum(rho, 1e-30), alpha[:, None])
+    inner = jnp.sum(Ls * target_poly[None, :, :] * quad_weight[None, :, :], axis=-1)
+    inner = jnp.swapaxes(inner, 0, 1)                          # [B, K+1]
+    norm = jnp.exp(gammaln(k_idx[None, :] + alpha[:, None] + 1.0) - gammaln(k_idx[None, :] + 1.0))
+    return inner / jnp.maximum(norm, jnp.asarray(1e-30, dtype=dtype))
+
+
+class HybridLaguerreHead(nn.Module):
+    """§13.11-C joint scheme: node coarse estimation + c_k iterative refinement.
+
+    Pipeline (per orbital):
+        1. Stage 1 — node coarse estimator:
+           Δr_raw = MLP(branch_feat) → Δr = softplus(Δr_raw) - log(2)
+           learned_nodes = r_analytic + cumsum(Δr) (then mask k ≥ n-1)
+        2. Stage 2 — c_k iterative refinement:
+           c_k^(0) = coeff_init (analytic, sparse)
+           for i in 1..n_iter:
+             c_k^(i) = c_k^(i-1) + step · MLP_i(branch_feat, c_k^(i-1),
+                                                  node_features)
+           c_k_final = c_k^(n_iter)
+
+    §2.3 init property (per §13.11-C.3):
+       - At init, Δr_raw = 0 → Δr = 0 → learned_nodes = r_analytic.
+       - At init, delta_i = 0 → c_k^(i) = c_k^(i-1) = ... = coeff_init.
+       - Hence P(r) = analytic hydrogenic P_H(r) at init. ✓
+
+    node_features: log(r) normalized + position indicators (simple, cheap).
+    """
+
+    K_max: int = 9
+    d_hidden_node: int = 64       # Stage 1 node MLP hidden width
+    d_hidden_ref: int = 32        # Stage 2 refinement MLP hidden width
+    n_iter: int = 3               # refinement iterations
+    step_size: float = 0.1        # per-iteration c_k update step
+
+    @nn.compact
+    def __call__(
+        self,
+        branch_feat: jnp.ndarray,        # [B, d_branch]
+        coeff_init: jnp.ndarray,         # [B, K_max+1] analytic c_k
+        r_nodes_analytic: jnp.ndarray,   # [B, K_max] precomputed node positions
+        lambda_orbital: jnp.ndarray,     # [B] Laguerre decay λ
+        alpha_orbital: jnp.ndarray,      # [B] generalized-Laguerre α
+        degree_orbital: jnp.ndarray,     # [B] polynomial degree n-l-1
+    ) -> jnp.ndarray:                   # returns c_k: [B, K_max+1]
+        # ---- Stage 1: node coarse estimator ----
+        # Output K_max deltas.  At init, kernel=zeros + bias=zeros → Δr_raw = 0
+        # → softplus(0) - log(2) = 0 → Δr = 0 (strictly).
+        h_node = nn.relu(nn.Dense(self.d_hidden_node, name="node_h")(branch_feat))
+        dr_raw = nn.Dense(
+            self.K_max,
+            kernel_init=nn.initializers.zeros,
+            bias_init=nn.initializers.zeros,
+            name="node_delta",
+        )(h_node)
+        # softplus - log(2) ensures softplus(0) - log(2) = 0 exactly.
+        delta_r = jax.nn.softplus(dr_raw) - jnp.log(jnp.array(2.0))
+        r_nodes_delta = jnp.cumsum(delta_r, axis=-1)        # [B, K_max]
+
+        # Mask: only keep first (n-1) deltas (sparse physics).
+        k_idx = jnp.arange(self.K_max, dtype=jnp.float32)
+        degree = jnp.clip(degree_orbital, 0, self.K_max).astype(jnp.float32)
+        mask = (k_idx[None, :] < degree[:, None]).astype(jnp.float32)
+        r_nodes_delta = r_nodes_delta * mask
+
+        # Learned node positions (init = r_analytic when delta=0).
+        learned_nodes = jnp.maximum(
+            r_nodes_analytic + r_nodes_delta,
+            jnp.asarray(1e-8, dtype=r_nodes_analytic.dtype),
+        )                                                   # [B, K_max]
+
+        # Compact node features for Stage 2:
+        # - log(1 + r_analytic) (spatial scale)
+        # - log(1 + |delta_r|) (deviation magnitude)
+        # - mask (which slots are "live")
+        node_feat = jnp.concatenate([
+            jnp.log1p(jnp.abs(learned_nodes)),
+            jnp.log1p(jnp.abs(r_nodes_delta)),
+            mask,
+        ], axis=-1)                                          # [B, 3*K_max]
+
+        # ---- Stage 2: c_k iterative refinement ----
+        # Start from coefficients directly reconstructed from learned nodes.
+        # This makes delta_r a physical path into P(r), not merely a weak
+        # auxiliary feature.
+        coeff_from_nodes = nodes_to_laguerre_coeffs(
+            learned_nodes,
+            coeff_init,
+            lambda_orbital,
+            alpha_orbital,
+            degree_orbital,
+            self.K_max,
+        )
+        coeff_from_base_nodes = nodes_to_laguerre_coeffs(
+            r_nodes_analytic,
+            coeff_init,
+            lambda_orbital,
+            alpha_orbital,
+            degree_orbital,
+            self.K_max,
+        )
+        c_k = coeff_init + (coeff_from_nodes - coeff_from_base_nodes)
+        for i in range(self.n_iter):
+            inp = jnp.concatenate([branch_feat, c_k, node_feat], axis=-1)
+            h = nn.relu(nn.Dense(self.d_hidden_ref, name=f"ref_h_{i}")(inp))
+            delta = nn.Dense(
+                self.K_max + 1,
+                kernel_init=nn.initializers.zeros,
+                bias_init=nn.initializers.zeros,
+                name=f"ref_delta_{i}",
+            )(h)
+            c_k = c_k + self.step_size * delta
+
+        return c_k
+
+
+# --------------------------------------------------------------------------- #
+#  Coefficient-decay regularizer  L_coeff_decay = mean(c² / (k+1))
+# --------------------------------------------------------------------------- #
+#
+# §13.10-A (2026-06-21): The classical 1/k! weighting under-constrains the
+# sparse non-zero slot (k = n-l-1, e.g. c_9 for H 10s): 1/9! ≈ 2.8e-6 means
+# the "active" coefficient is essentially free under the regularizer.  This
+# allows the MLP to push large values into a single c_k and effectively bypass
+# the analytic init, which is the root cause of n=8..10 cosine collapse.
+#
+# New formula 1/(k+1) provides UNIFORM per-k constraint strength
+# (weight ratio = 36288× at k=9), encouraging sparse coefficients without
+# killing the dominant mode.  Same §2.3 init property holds (analytically
+# c_{n-l-1} = O(1) so penalty stays small in init).
 # --------------------------------------------------------------------------- #
 
 
 def coeff_decay_loss(coeffs: jnp.ndarray, K_max: int) -> jnp.ndarray:
-    """L2 penalty weighted by 1/k! to suppress divergence of high-k terms."""
-    import math
+    """L2 penalty weighted by 1/(k+1) to uniformly suppress all c_k.
 
-    weights = jnp.asarray([1.0 / math.factorial(k) for k in range(K_max + 1)], dtype=coeffs.dtype)
+    This is the §13.10-A "sparse forcing" formulation — replaces the classical
+    1/k! weights (which under-constrain the sparse active slot at k=n-l-1).
+    """
+    weights = jnp.asarray([1.0 / (k + 1) for k in range(K_max + 1)], dtype=coeffs.dtype)
     return jnp.mean(coeffs * coeffs * weights[None, :])
+
+
+# --------------------------------------------------------------------------- #
+#  §13.C: coefficient ANCHOR loss  L_anchor = mean(mask · (c_k − c_k^init)²)
+# --------------------------------------------------------------------------- #
+#
+# Empirical result across Steps C/D/E/F/G: for the SINGLE-ELECTRON hydrogenic
+# training manifold the analytic P_H is the *exact* answer, and it is already
+# loaded into `coeff_init` at init (|max(P − P_H)| ≈ 1e-7).  The high-n
+# (n ≥ 8) node-gate failures are therefore *training-induced degradation* of a
+# perfect initialization — the fragile 1-sparse fixed point gets knocked off
+# by PDE/norm gradient noise and the 10-dim c_k basin is too small to recover.
+#
+# The original design (§5.3) explicitly forbade `‖c − c_H‖²`, arguing the
+# coefficients should be energy-gradient driven.  Five rounds disproved that
+# philosophy for single-electron data.  This anchor *toward `coeff_init`*
+# (NOT toward zero, unlike coeff_decay) directly counters the degradation.
+# It is applied only to the fragile high-n slots so low-n keeps its freedom,
+# and it can be annealed off for the multi-electron stage.
+# --------------------------------------------------------------------------- #
+
+
+def coeff_anchor_loss(
+    coeffs: jnp.ndarray,
+    coeff_init: jnp.ndarray,
+    n_principal: jnp.ndarray,
+    orb_mask: jnp.ndarray | None = None,
+    n_min: float = 8.0,
+) -> jnp.ndarray:
+    """Mean squared deviation of c_k from the analytic init, restricted to
+    high-n orbitals (n ≥ ``n_min``).
+
+    Shapes:
+        coeffs, coeff_init : [B, N_orb, K_max+1]
+        n_principal        : [B, N_orb]
+        orb_mask           : [B, N_orb] (bool/0-1) or None
+    """
+    coeffs = jnp.asarray(coeffs)
+    coeff_init = jnp.asarray(coeff_init, dtype=coeffs.dtype)
+    n_arr = jnp.asarray(n_principal, dtype=coeffs.dtype)
+
+    highn = (n_arr >= n_min).astype(coeffs.dtype)              # [B, N_orb]
+    if orb_mask is not None:
+        highn = highn * orb_mask.astype(coeffs.dtype)
+    w = highn[..., None]                                       # [B, N_orb, 1]
+
+    diff = (coeffs - coeff_init) * w
+    denom = jnp.maximum(jnp.sum(w) * coeffs.shape[-1], 1.0)
+    return jnp.sum(diff * diff) / denom
 
 
 # --------------------------------------------------------------------------- #

@@ -184,7 +184,14 @@ def main():
              len(ds), n_epochs, steps, bs)
 
     warm_idx = list(range(min(bs, len(ds))))
-    warm_batch = collate_batches([ds[i] for i in warm_idx], n_csf_max=int(cfg.model.n_csf_max))
+    warm_batch = collate_batches(
+        [ds[i] for i in warm_idx],
+        n_csf_max=int(cfg.model.n_csf_max),
+        k_max=int(getattr(cfg.model, "K_max", 9)),
+        build_nodes=bool(getattr(cfg.model, "use_hybrid_head", False)),
+        nodes_table_path=str(getattr(cfg.model, "nodes_table_path",
+                                     "data_cache/laguerre_nodes_z1_26_n1_10.parquet")),
+    )
     log.info("Compiling JIT train_step on %s (first call traces XLA)…",
              jax.default_backend())
     t_compile = time.perf_counter()
@@ -195,7 +202,7 @@ def main():
 
     fieldnames = ["epoch", "loss", "pde", "ortho", "asym", "norm",
                   "v_prior", "v_smooth", "scf",
-                  "coeff_decay", "lambda_prior", "q_residual"]
+                  "coeff_decay", "coeff_anchor", "lambda_prior", "q_residual"]
     with history_path.open("a", newline="") as hf:
         writer = csv.DictWriter(hf, fieldnames=fieldnames)
         if write_header:
@@ -213,7 +220,12 @@ def main():
                 else:
                     idx = [(step_idx * bs + i) % len(ds) for i in range(bs)]
                 batch = collate_batches(
-                    [ds[i] for i in idx], n_csf_max=int(cfg.model.n_csf_max)
+                    [ds[i] for i in idx],
+                    n_csf_max=int(cfg.model.n_csf_max),
+                    k_max=int(getattr(cfg.model, "K_max", 9)),
+                    build_nodes=bool(getattr(cfg.model, "use_hybrid_head", False)),
+                    nodes_table_path=str(getattr(cfg.model, "nodes_table_path",
+                                                 "data_cache/laguerre_nodes_z1_26_n1_10.parquet")),
                 )
                 state, metrics = train_step(state, batch, grid, weights, dfs_cfg)
                 epoch_loss += float(metrics["loss"])
@@ -230,9 +242,10 @@ def main():
             if (epoch + 1) % max(val_every, 1) == 0 or epoch < 3:
                 log.info(
                     "epoch %4d  loss=%.4f  pde=%.4f  ortho=%.4e  norm=%.4f  "
-                    "cd=%.3e  λ=%.3e  q=%.3e  %.1fs (%.2fs/step)",
+                    "cd=%.3e  ca=%.3e  λ=%.3e  q=%.3e  %.1fs (%.2fs/step)",
                     epoch, row["loss"], row["pde"], row["ortho"], row["norm"],
-                    row["coeff_decay"], row["lambda_prior"], row["q_residual"],
+                    row["coeff_decay"], row["coeff_anchor"],
+                    row["lambda_prior"], row["q_residual"],
                     sec, sps,
                 )
             elif sps > 3.0:

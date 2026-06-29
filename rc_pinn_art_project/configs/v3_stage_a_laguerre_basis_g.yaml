@@ -1,0 +1,140 @@
+# Stage G: §13.11-C Joint scheme (HybridLaguerreHead)
+#
+# Step G directly attacks the §13.9 negative-result root cause:
+# `LaguerreCoeffHead` outputs 10 independent coefficients in a 10-dim
+# space, but the analytic hydrogenic solution is **1-sparse** (only one
+# non-zero c_k).  The MLP cannot find this low-dim subspace by gradient
+# descent alone.
+#
+# §13.11-C replaces the legacy 2-layer MLP with **HybridLaguerreHead**:
+#   * Stage 1 (node coarse estimator): outputs K_max deltas, added to
+#     analytic node positions r_1, ..., r_{n-1} (precomputed, exact).
+#     softplus(x) - log(2) ensures init = 0 strictly (preserves §2.3).
+#   * Stage 2 (c_k iterative refinement): 3 iterations of small-step
+#     updates to the analytic c_k, with node features as extra input.
+#   * §2.3 init = physics preserved: at init, learned nodes = analytic
+#     nodes AND c_k = analytic c_k → P(r) = hydrogenic P_H(r) exactly.
+#
+# Differences vs. configs/v3_stage_a_laguerre_basis_e.yaml:
+#   * `model.use_hybrid_head`           false → true (new head)
+#   * `model.hybrid_d_hidden_node`      64 (new)
+#   * `model.hybrid_d_hidden_ref`       32 (new)
+#   * `model.hybrid_n_iter`              3 (new; refinement iterations)
+#   * `model.hybrid_step_size`           0.1 (new; per-iter c_k step)
+#   * `model.nodes_table_path`           data_cache/laguerre_nodes_z1_26_n1_10.parquet
+#   * everything else identical to _e.yaml
+#
+# Expected effect (per §13.11 in the design doc):
+#   * node-gate ≥ 85% (was 63% in Step E)
+#   * cos < 0.1 failures < 10 (was 52 in Step E)
+#   * training stability improved (node + amplitude are physical)
+#
+# IMPORTANT: cold-start training required — Step E ckpt cannot be resumed
+# (HybridLaguerreHead introduces new parameter scopes).  Architecture
+# inherits §13.1 (dual trunk) + §13.2 (log-r input) + §13.9 (Branch
+# capacity) + §2.3 (init = physics) — only the coeff head is new.
+
+seed: 42
+
+grid:
+  r_min: 1.0e-3
+  r_max: 250.0
+  n_grid: 512
+  scheme: loglinear
+
+coords:
+  c1: 1.0
+  c2: 1.0
+  r_eps: 1.0e-6
+  learn_map: false
+
+model:
+  n_orb_max: 16
+  n_csf_max: 8
+  # --- §13.9 Branch Capacity ---
+  d_branch: 256                  # was 64 — main fix
+  d_trunk: 128
+  n_siren_layers: 3
+  omega_0: 15.0
+  apply_lowdin: false
+
+  # --- Stage A Round 2 (Laguerre basis) ---
+  use_laguerre_basis: true
+  K_max: 9
+  learn_lambda: true
+  perturb_scale_P: 0.05
+  perturb_scale_Q: 0.05
+
+  # --- §13.9: per-head hidden widths ---
+  coeff_d_hidden: 128            # was 64 (unused when use_hybrid_head=true)
+  lambda_d_hidden: 64            # was 32
+  q_corr_d_hidden: 64            # unchanged
+
+  # --- §13.11-C: HybridLaguerreHead (Step G) ---
+  use_hybrid_head: true                  # replaces LaguerreCoeffHead
+  nodes_table_path: data_cache/laguerre_nodes_z1_26_n1_10.parquet
+  hybrid_d_hidden_node: 64              # Stage 1 node MLP hidden width
+  hybrid_d_hidden_ref: 32               # Stage 2 refinement MLP hidden width
+  hybrid_n_iter: 3                       # refinement iterations
+  hybrid_step_size: 0.1                  # per-iter c_k step
+
+  # --- §13.2 of 17_generalized_laguerre_basis.md ---
+  use_log_r_input: true
+  log_r_scale: 1.0
+
+  # --- §13.1 of 17_generalized_laguerre_basis.md ---
+  use_dual_trunk: true
+  d_trunk_high: 128
+  omega_0_high: 60.0
+  lambda_split: 4.0
+  gate_temperature: 2.0
+
+ci:
+  enabled: false
+  k_list: [0, 1, 2]
+  M_max: 8
+  eps_degen_meV: 1.0e-3
+  racah_cache: data_cache/racah_cache_v3.npz
+  diagonal_fill: hybrid
+
+continuum:
+  enabled: false
+
+stage_a:
+  n_epochs: 5000
+  batch_size: 8
+  weights:
+    pde: 1.0
+    ortho: 10.0
+    asym: 0.1
+    norm: 10.0
+    v_prior: 5.0
+    v_smooth: 1.0e-6
+    coeff_decay: 1.0e-3
+    lambda_prior: 1.0e-1
+    q_residual: 1.0
+  gate:
+    cos_threshold: 0.5
+    pde_threshold: 1.0e-1
+    e_orb_meV_threshold: 500.0
+
+optimizer:
+  lr_trunk: 3.0e-4
+  lr_branch: 1.0e-4
+  weight_decay: 1.0e-4
+  grad_clip: 1.0
+
+training:
+  ckpt_dir: ./checkpoints/v3_stage_a_laguerre_basis_g
+  log_dir: ./logs/v3_stage_a_laguerre_basis_g
+  val_every_epochs: 10
+  steps_per_epoch: 5
+
+dataset:
+  manifest: data_cache/manifest_hydrogenic_z1_26_n10.parquet
+  n_orb_max: 16
+  n_csf_max: 8
+
+stage_c:
+  diagonal_fill: hybrid
+  nist_inject: true

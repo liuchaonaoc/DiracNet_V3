@@ -77,7 +77,7 @@ def parse_fac(z: int, n: int) -> dict | None:
     return {"r": r, "V": V, "P": P, "Q": Q}
 
 
-def load_pinn(model, params, ds, grid, n_csf_max: int, z: int, n: int) -> dict | None:
+def load_pinn(model, params, ds, grid, cfg, n_csf_max: int, z: int, n: int) -> dict | None:
     """Look up the manifest row for (Z, n) and apply the PINN."""
     target = None
     for i in range(len(ds)):
@@ -87,7 +87,14 @@ def load_pinn(model, params, ds, grid, n_csf_max: int, z: int, n: int) -> dict |
             break
     if target is None:
         return None
-    batch = collate_batches([ds[target]], n_csf_max=n_csf_max)
+    batch = collate_batches(
+        [ds[target]],
+        n_csf_max=n_csf_max,
+        k_max=int(getattr(cfg.model, "K_max", 9)),
+        build_nodes=bool(getattr(cfg.model, "use_hybrid_head", False)),
+        nodes_table_path=str(getattr(cfg.model, "nodes_table_path",
+                                     "data_cache/laguerre_nodes_z1_26_n1_10.parquet")),
+    )
     out = model.apply(params, batch, grid, train=False, return_ci=False)
     V = np.asarray(out["V"][0])  # [N_orb, N_g] or [N_g]
     P = np.asarray(out["wavefunctions"]["P"][0])  # [N_orb, N_g]
@@ -173,7 +180,7 @@ def main():
             print(f"[skip] no cFAC file for Z={z}, n={n}: run gen_cfac_batch.sh first")
             n_skip_fac += 1
             continue
-        pinn = load_pinn(model, params, ds, grid, int(cfg.model.n_csf_max), z, n)
+        pinn = load_pinn(model, params, ds, grid, cfg, int(cfg.model.n_csf_max), z, n)
         if pinn is None:
             print(f"[skip] no manifest row for Z={z}, n={n}")
             n_skip_pinn += 1
@@ -197,7 +204,7 @@ def main():
         elem = ELEM.get(z, f"Z={z}")
         label = f"{elem} {n}s"
         fac = parse_fac(z, n)
-        pinn = load_pinn(model, params, ds, grid, int(cfg.model.n_csf_max), z, n)
+        pinn = load_pinn(model, params, ds, grid, cfg, int(cfg.model.n_csf_max), z, n)
         if fac is None or pinn is None:
             continue
         plot_row(axes[row], fac, pinn, label)

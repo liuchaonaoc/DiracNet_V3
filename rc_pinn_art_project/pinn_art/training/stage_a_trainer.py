@@ -10,7 +10,11 @@ import jax.numpy as jnp
 import optax
 
 from ..losses.asymptotic_loss import asymptotic_tail_loss
-from ..losses.coeff_loss import coeff_decay_loss, lambda_prior_loss
+from ..losses.coeff_loss import (
+    coeff_anchor_loss,
+    coeff_decay_loss,
+    lambda_prior_loss,
+)
 from ..losses.norm_loss import normalization_loss
 from ..losses.ortho_loss import orthonormality_loss
 from ..losses.pde_loss import dirac_pde_loss
@@ -130,6 +134,7 @@ def compute_stage_a_loss(
     # value defaults to 0.
     K_max = 9  # default; matched at init in DeepONetDirac(K_max=9)
     lag_coeffs = out.get("laguerre_coeffs")
+    lag_coeff_init = out.get("laguerre_coeff_init")
     lag_lambdas = out.get("laguerre_lambdas")
     lag_lambda_init = out.get("laguerre_lambda_init")
     lag_deltaQ = out.get("laguerre_deltaQ")
@@ -142,6 +147,18 @@ def compute_stage_a_loss(
         coeff_decay_loss(lag_coeffs, K_max) if lag_coeffs is not None
         else jnp.asarray(0.0, dtype=V.dtype)
     )
+    # §13.C: anchor high-n coeffs back toward the analytic init (single-electron
+    # P_H is exact; this counters training-induced degradation at n >= n_min).
+    if lag_coeffs is not None and lag_coeff_init is not None and n_principal is not None:
+        # NOTE: under jit the weights values are traced arrays, so keep
+        # `n_min` as-is (the `>=` comparison handles a traced scalar fine).
+        l_coeff_anchor = coeff_anchor_loss(
+            lag_coeffs, lag_coeff_init, n_principal,
+            orb_mask=orb_mask,
+            n_min=weights.get("_coeff_anchor_n_min", 8.0),
+        )
+    else:
+        l_coeff_anchor = jnp.asarray(0.0, dtype=V.dtype)
     if lag_lambdas is not None and lag_lambda_init is not None:
         # Per-batch λ_init is `Z_eff / n` for each row's (Z, n, l).
         # For inactive orbital slots both `lag_lambdas` and
@@ -170,6 +187,7 @@ def compute_stage_a_loss(
         + weights["v_smooth"] * l_vs
         + weights.get("scf", 0.0) * l_scf
         + weights.get("coeff_decay", 0.0) * l_coeff
+        + weights.get("coeff_anchor", 0.0) * l_coeff_anchor
         + weights.get("lambda_prior", 0.0) * l_lambda
         + weights.get("q_residual", 0.0) * l_q
     )
@@ -183,6 +201,7 @@ def compute_stage_a_loss(
         "v_smooth": l_vs,
         "scf": l_scf,
         "coeff_decay": l_coeff,
+        "coeff_anchor": l_coeff_anchor,
         "lambda_prior": l_lambda,
         "q_residual": l_q,
     }

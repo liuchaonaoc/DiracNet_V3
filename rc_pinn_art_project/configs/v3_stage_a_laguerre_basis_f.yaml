@@ -1,0 +1,117 @@
+# Stage F: §13.10-A sparse forcing (implements §13.10 of 17_generalized_laguerre_basis.md)
+#
+# Step F directly attacks the §13.9 negative-result root cause: the
+# coeff_decay_loss uses classical 1/k! weights which UNDER-CONSTRAIN the
+# sparse active slot (c_{n-l-1}).  For H 10s the c_9 weight is 1/9! ≈
+# 2.8e-6 — essentially free under the regularizer — letting MLP push
+# arbitrary values into the dominant mode.
+#
+# Differences vs. configs/v3_stage_a_laguerre_basis_e.yaml:
+#   * `coeff_decay` weight        1e-3  → 5.0    (5000× — strong sparsity push)
+#   * `laguerre_basis.coeff_decay_loss` formula: 1/k! → 1/(k+1)  (uniform weight)
+#   * everything else identical to _e.yaml (Branch capacity + dual trunk + log-r)
+#
+# Expected effect (per §13.10 in the design doc):
+#   * H 8s/9s/10s node-gate:     0/3 → ≥ 2/3
+#   * overall 260-row node-gate:  63.1% → ≥ 75%
+#   * cos < 0.1 failures:         52 → 25-35
+#
+# Implementation: only config + a single file edit to coeff_decay_loss().
+# Code-side changes are minimal & additive; init=physics property preserved.
+
+seed: 42
+
+grid:
+  r_min: 1.0e-3
+  r_max: 250.0
+  n_grid: 512
+  scheme: loglinear
+
+coords:
+  c1: 1.0
+  c2: 1.0
+  r_eps: 1.0e-6
+  learn_map: false
+
+model:
+  n_orb_max: 16
+  n_csf_max: 8
+  # --- §13.9 Branch Capacity ---
+  d_branch: 256                  # was 64 — main fix
+  d_trunk: 128
+  n_siren_layers: 3
+  omega_0: 15.0
+  apply_lowdin: false
+
+  # --- Stage A Round 2 (Laguerre basis) ---
+  use_laguerre_basis: true
+  K_max: 9
+  learn_lambda: true
+  perturb_scale_P: 0.05
+  perturb_scale_Q: 0.05
+
+  # --- §13.9: per-head hidden widths ---
+  coeff_d_hidden: 128            # was 64
+  lambda_d_hidden: 64            # was 32
+  q_corr_d_hidden: 64            # unchanged
+
+  # --- §13.2 of 17_generalized_laguerre_basis.md ---
+  use_log_r_input: true
+  log_r_scale: 1.0
+
+  # --- §13.1 of 17_generalized_laguerre_basis.md ---
+  use_dual_trunk: true
+  d_trunk_high: 128
+  omega_0_high: 60.0
+  lambda_split: 4.0
+  gate_temperature: 2.0
+
+ci:
+  enabled: false
+  k_list: [0, 1, 2]
+  M_max: 8
+  eps_degen_meV: 1.0e-3
+  racah_cache: data_cache/racah_cache_v3.npz
+  diagonal_fill: hybrid
+
+continuum:
+  enabled: false
+
+stage_a:
+  n_epochs: 5000
+  batch_size: 8
+  weights:
+    pde: 1.0
+    ortho: 10.0
+    asym: 0.1
+    norm: 10.0
+    v_prior: 5.0
+    v_smooth: 1.0e-6
+    coeff_decay: 5.0               # §13.10-A: 1e-3 → 5.0 (sparse forcing)
+    lambda_prior: 1.0e-1
+    q_residual: 1.0
+  gate:
+    cos_threshold: 0.5
+    pde_threshold: 1.0e-1
+    e_orb_meV_threshold: 500.0
+
+optimizer:
+  lr_trunk: 3.0e-4
+  lr_branch: 1.0e-4
+  weight_decay: 1.0e-4
+  grad_clip: 1.0
+
+training:
+  ckpt_dir: ./checkpoints/v3_stage_a_laguerre_basis_f
+  log_dir: ./logs/v3_stage_a_laguerre_basis_f
+  val_every_epochs: 10
+  steps_per_epoch: 5
+
+dataset:
+  manifest: data_cache/manifest_hydrogenic_z1_26_n10.parquet
+  n_orb_max: 16
+  n_csf_max: 8
+
+stage_c:
+  diagonal_fill: hybrid
+  nist_inject: true

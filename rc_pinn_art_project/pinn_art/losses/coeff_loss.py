@@ -7,7 +7,11 @@ import a uniform `pinn_art.losss.coeff_loss.*` namespace.
 
 from __future__ import annotations
 
-from ..nets.laguerre_basis import coeff_decay_loss, lambda_prior_loss
+from ..nets.laguerre_basis import (
+    coeff_anchor_loss,
+    coeff_decay_loss,
+    lambda_prior_loss,
+)
 
 
-__all__ = ["coeff_decay_loss", "lambda_prior_loss"]
+__all__ = ["coeff_anchor_loss", "coeff_decay_loss", "lambda_prior_loss"]

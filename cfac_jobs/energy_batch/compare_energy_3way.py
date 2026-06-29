@@ -74,11 +74,18 @@ def parse_fac_energy(z: int, n: int, fac_dir: Path) -> float | None:
     return None
 
 
-def run_pinn(model, params, ds, grid, n_csf_max: int, df: pd.DataFrame) -> list[float]:
+def run_pinn(model, params, ds, grid, cfg, n_csf_max: int, df: pd.DataFrame) -> list[float]:
     """Return one PINN E_orb per manifest row, in Hartree."""
     E_list = []
     for i in range(len(ds)):
-        batch = collate_batches([ds[i]], n_csf_max=n_csf_max)
+        batch = collate_batches(
+            [ds[i]],
+            n_csf_max=n_csf_max,
+            k_max=int(getattr(cfg.model, "K_max", 9)),
+            build_nodes=bool(getattr(cfg.model, "use_hybrid_head", False)),
+            nodes_table_path=str(getattr(cfg.model, "nodes_table_path",
+                                         "data_cache/laguerre_nodes_z1_26_n1_10.parquet")),
+        )
         out = model.apply(params, batch, grid, train=False, return_ci=False)
         E_h = np.asarray(out["E_orb"][0])    # [N_orb]
         sh = np.asarray(batch["shell_table"])[0]
@@ -137,7 +144,7 @@ def main():
     ds = ManifestDataset(args.manifest,
                          n_orb_max=int(cfg.model.n_orb_max),
                          n_csf_max=int(cfg.model.n_csf_max))
-    df["E_pinn_hartree"] = run_pinn(model, params, ds, grid,
+    df["E_pinn_hartree"] = run_pinn(model, params, ds, grid, cfg,
                                     int(cfg.model.n_csf_max), df)
 
     # --- 5. ΔE in meV ---

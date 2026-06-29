@@ -2,8 +2,105 @@
 
 from __future__ import annotations
 
+from functools import lru_cache
+from pathlib import Path
+
 import jax.numpy as jnp
 import numpy as np
+
+
+# --------------------------------------------------------------------------- #
+#  §13.11-C: analytic Laguerre node table (host-side lookup)
+# --------------------------------------------------------------------------- #
+#
+# The HybridLaguerreHead needs analytic Laguerre polynomial node positions
+# r_1, ..., r_{n-1} for each (Z, n, l).  These are precomputed once via
+# `scripts/v3_precompute_laguerre_nodes.py` and stored as a parquet file.
+# The lookup is done HOST-SIDE inside `collate_batches` so the JIT region
+# stays free of Python table lookups.
+#
+# The default path is the standard Step-G cache location.  Tests can pass
+# a custom path via `lru_cache` invalidation.
+_DEFAULT_NODES_PATH = (
+    Path(__file__).resolve().parents[2]
+    / "data_cache"
+    / "laguerre_nodes_z1_26_n1_10.parquet"
+)
+
+
+@lru_cache(maxsize=4)
+def _load_nodes_table(path_str: str) -> dict:
+    """Cached host-side loader for the analytic Laguerre nodes parquet."""
+    path = _resolve_nodes_table_path(path_str)
+    import pandas as pd
+    df = pd.read_parquet(path)
+    out: dict[tuple[int, int, int], np.ndarray] = {}
+    K_max = int(df["K_max"].iloc[0])
+    for _, row in df.iterrows():
+        Z = int(row["Z"]); n = int(row["n"]); l = int(row["l"])
+        r = np.asarray(
+            [row[f"r_node_{j}"] for j in range(K_max)], dtype=np.float32
+        )
+        out[(Z, n, l)] = r
+    return out
+
+
+def _resolve_nodes_table_path(path_str: str) -> Path:
+    """Resolve node table paths robustly from common launch directories.
+
+    Training is usually launched from `rc_pinn_art_project`, while some
+    helper scripts run from `DiracNet_V3`.  Try both interpretations and
+    fail loudly if neither exists; zero-node fallback silently disables the
+    §13.11-C prior and is therefore unsafe.
+    """
+    raw = Path(path_str)
+    if raw.is_absolute():
+        candidates = [raw]
+    else:
+        project_root = Path(__file__).resolve().parents[2]  # rc_pinn_art_project
+        repo_root = project_root.parent                     # DiracNet_V3
+        candidates = [
+            Path.cwd() / raw,
+            project_root / raw,
+            repo_root / raw,
+        ]
+    for candidate in candidates:
+        if candidate.exists():
+            return candidate
+    tried = "\n  - ".join(str(p) for p in candidates)
+    raise FileNotFoundError(
+        "Analytic Laguerre node table not found. Tried:\n  - "
+        f"{tried}\nRun scripts/v3_precompute_laguerre_nodes.py or fix "
+        "`model.nodes_table_path`."
+    )
+
+
+def build_analytic_nodes(
+    Z_arr: np.ndarray,
+    n_principal: np.ndarray,
+    l_orbital: np.ndarray,
+    K_max: int,
+    table_path: str | Path | None = None,
+) -> np.ndarray:
+    """Build [B, N_orb, K_max] analytic Laguerre node positions.
+
+    Looks up nodes via the host-side parquet table.  Slots with no entry
+    (n <= l, or unknown config) are zero-padded.
+    """
+    path = str(table_path) if table_path is not None else str(_DEFAULT_NODES_PATH)
+    table = _load_nodes_table(path)
+    B = int(Z_arr.shape[0])
+    N_orb = int(n_principal.shape[1])
+    out = np.zeros((B, N_orb, K_max), dtype=np.float32)
+    for b in range(B):
+        for a in range(N_orb):
+            Z_i = int(Z_arr[b])
+            n_i = int(n_principal[b, a])
+            l_i = int(l_orbital[b, a])
+            r = table.get((Z_i, n_i, l_i))
+            if r is not None:
+                out[b, a] = r
+    return out
 
 
 def _lookup_C_ang(parent_config: str, cache, n_csf_max: int, n_k: int) -> np.ndarray:
@@ -27,6 +124,9 @@ def collate_batches(
     *,
     racah_cache=None,
     k_list: tuple[int, ...] | None = None,
+    k_max: int = 9,
+    build_nodes: bool = False,
+    nodes_table_path: str | Path | None = None,
 ) -> dict:
     B = len(items)
     n_orb = items[0]["kappa"].shape[0]
@@ -78,6 +178,21 @@ def collate_batches(
 
     if items[0].get("csf_to_orb") is not None:
         batch["csf_to_orb"] = jnp.asarray(np.stack([it["csf_to_orb"] for it in items]), dtype=jnp.float32)
+
+    # §13.11-C: inject analytic Laguerre node positions host-side so the
+    # JIT region stays free of Python table lookups.  When the table is
+    # missing (legacy training), `build_analytic_nodes` returns zeros and
+    # the HybridLaguerreHead degrades to the LaguerreCoeffHead behavior.
+    if build_nodes:
+        Z_arr = np.asarray(batch["Z"])
+        n_principal = np.asarray(batch["shell_table"][..., 0]) if "shell_table" in batch else None
+        l_orbital = np.asarray(batch["shell_table"][..., 1]) if "shell_table" in batch else None
+        if n_principal is not None and l_orbital is not None:
+            nodes_np = build_analytic_nodes(
+                Z_arr, n_principal, l_orbital, K_max=k_max,
+                table_path=nodes_table_path,
+            )
+            batch["analytic_nodes"] = jnp.asarray(nodes_np, dtype=jnp.float32)
 
     return batch
 

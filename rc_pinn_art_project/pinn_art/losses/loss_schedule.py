@@ -9,8 +9,9 @@ def stage_a_weights(cfg) -> dict[str, float]:
         return {
             "pde": 1.0, "ortho": 100.0, "asym": 0.01, "norm": 10.0,
             "v_prior": 0.1, "v_smooth": 1e-3, "scf": 0.0,
-            "coeff_decay": 0.0, "lambda_prior": 0.0, "q_residual": 0.0,
-            "_perturb_scale_Q": 0.05,
+            "coeff_decay": 0.0, "coeff_anchor": 0.0,
+            "lambda_prior": 0.0, "q_residual": 0.0,
+            "_perturb_scale_Q": 0.05, "_coeff_anchor_n_min": 8.0,
         }
     weights = getattr(w, "weights", w)
     model_cfg = getattr(cfg, "model", None)
@@ -24,9 +25,12 @@ def stage_a_weights(cfg) -> dict[str, float]:
         "scf": float(getattr(weights, "scf", 0.0)),
         # --- Stage A Round 2 (Laguerre basis) regularizers ---
         "coeff_decay": float(getattr(weights, "coeff_decay", 0.0)),
+        # §13.C: anchor high-n coeffs toward analytic init.
+        "coeff_anchor": float(getattr(weights, "coeff_anchor", 0.0)),
         "lambda_prior": float(getattr(weights, "lambda_prior", 0.0)),
         "q_residual": float(getattr(weights, "q_residual", 0.0)),
         "_perturb_scale_Q": float(getattr(model_cfg, "perturb_scale_Q", 0.05)),
+        "_coeff_anchor_n_min": float(getattr(weights, "coeff_anchor_n_min", 8.0)),
     }
 
 

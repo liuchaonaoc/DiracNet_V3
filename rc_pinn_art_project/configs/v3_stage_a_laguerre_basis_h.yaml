@@ -1,0 +1,143 @@
+# Stage H: Direction C (coeff anchor) + Direction B (analytic dQ)
+#
+# Step H is the corrective baseline decided after §13.11-C (Hybrid head) was
+# shown to add NO value over the plain Step C LaguerreCoeffHead (RMSE
+# 29 654 vs 28 042 meV; node-gate ~62% vs 60%).  The new direction is grounded
+# in a reframing (see §13.14 of 17_generalized_laguerre_basis.md):
+#
+#   * The training manifold is SINGLE-ELECTRON hydrogenic, so the exact P(r)
+#     is the analytic P_H already loaded into `coeff_init` at init.  The n>=8
+#     node-gate failures are training-induced DEGRADATION of a perfect init,
+#     not a "can't learn" problem.
+#
+# Two changes (both already wired in code):
+#   * Direction C — `coeff_anchor` loss: pull high-n (n>=8) coeffs back toward
+#     `coeff_init` (NOT toward zero like coeff_decay).  Counters degradation.
+#   * Direction B — analytic dQ: replace `jnp.gradient(Q)` (which numerically
+#     re-differentiates dP/dr → d²P at long range, the dominant noise source)
+#     with the closed-form kinetic-balance derivative.  No config knob — it is
+#     automatic for the Laguerre path.
+#
+# Architecture: reverts the HEAD to the legacy `LaguerreCoeffHead`
+# (`use_hybrid_head: false`) but KEEPS the beneficial pieces from Steps D/E:
+#   * §13.9 Branch capacity (d_branch=256, coeff/lambda hidden 128/64)
+#   * §13.1 dual trunk + §13.2 log-r input (helped Z=16..26 uniformity)
+#
+# Differences vs. configs/v3_stage_a_laguerre_basis_e.yaml:
+#   * `use_hybrid_head` stays false (== _e; _g turned it on, _h keeps it off)
+#   * `stage_a.weights.coeff_anchor = 50.0`     (NEW — §13.C)
+#   * `stage_a.weights.coeff_anchor_n_min = 8`  (NEW — only n>=8 anchored)
+#   * everything else identical to _e.yaml
+#
+# Cold-start required (anchor loss + analytic dQ change the graph; the _e/_g
+# ckpts are not resumed).  §2.3 init = physics is preserved (anchor is 0 at
+# init because c_k == coeff_init exactly).
+#
+# Expected effect:
+#   * n=8..10 node-gate:  fail → pass (degradation halted)
+#   * 260-row node-gate:  ~62% → target >= 85%
+#   * long-range Q noise (dQ) removed → cleaner PDE residual for high-n
+#   * energy RMSE:        target < Step C 28 042 meV
+
+seed: 42
+
+grid:
+  r_min: 1.0e-3
+  r_max: 250.0
+  n_grid: 512
+  scheme: loglinear
+
+coords:
+  c1: 1.0
+  c2: 1.0
+  r_eps: 1.0e-6
+  learn_map: false
+
+model:
+  n_orb_max: 16
+  n_csf_max: 8
+  # --- §13.9 Branch Capacity ---
+  d_branch: 256
+  d_trunk: 128
+  n_siren_layers: 3
+  omega_0: 15.0
+  apply_lowdin: false
+
+  # --- Stage A Round 2 (Laguerre basis) ---
+  use_laguerre_basis: true
+  K_max: 9
+  learn_lambda: true
+  perturb_scale_P: 0.05
+  perturb_scale_Q: 0.05
+
+  # --- §13.9: per-head hidden widths ---
+  coeff_d_hidden: 128
+  lambda_d_hidden: 64
+  q_corr_d_hidden: 64
+
+  # --- §13.11-C Hybrid head: OFF (reverted to legacy LaguerreCoeffHead) ---
+  use_hybrid_head: false
+
+  # --- §13.2 log-r input ---
+  use_log_r_input: true
+  log_r_scale: 1.0
+
+  # --- §13.1 dual trunk ---
+  use_dual_trunk: true
+  d_trunk_high: 128
+  omega_0_high: 60.0
+  lambda_split: 4.0
+  gate_temperature: 2.0
+
+ci:
+  enabled: false
+  k_list: [0, 1, 2]
+  M_max: 8
+  eps_degen_meV: 1.0e-3
+  racah_cache: data_cache/racah_cache_v3.npz
+  diagonal_fill: hybrid
+
+continuum:
+  enabled: false
+
+stage_a:
+  n_epochs: 5000
+  batch_size: 8
+  weights:
+    pde: 1.0
+    ortho: 10.0
+    asym: 0.1
+    norm: 10.0
+    v_prior: 5.0
+    v_smooth: 1.0e-6
+    coeff_decay: 1.0e-3
+    # --- §13.C: anchor high-n coeffs toward analytic init ---
+    coeff_anchor: 50.0
+    coeff_anchor_n_min: 8
+    lambda_prior: 1.0e-1
+    q_residual: 1.0
+  gate:
+    cos_threshold: 0.5
+    pde_threshold: 1.0e-1
+    e_orb_meV_threshold: 500.0
+
+optimizer:
+  lr_trunk: 3.0e-4
+  lr_branch: 1.0e-4
+  weight_decay: 1.0e-4
+  grad_clip: 1.0
+
+training:
+  ckpt_dir: ./checkpoints/v3_stage_a_laguerre_basis_h
+  log_dir: ./logs/v3_stage_a_laguerre_basis_h
+  val_every_epochs: 10
+  steps_per_epoch: 5
+
+dataset:
+  manifest: data_cache/manifest_hydrogenic_z1_26_n10.parquet
+  n_orb_max: 16
+  n_csf_max: 8
+
+stage_c:
+  diagonal_fill: hybrid
+  nist_inject: true

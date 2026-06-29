@@ -1,0 +1,126 @@
+# Stage E: Branch Capacity (implements §13.9 of 17_generalized_laguerre_basis.md)
+#
+# Step E directly attacks the §13.8 negative-result root cause: the
+# Branch-side MLPs feeding LaguerreCoeffHead / LaguerreLambdaHead are
+# capacity-bound when tasked with mapping (Z, n, l) → (10 Laguerre
+# coefficients + 1 λ) across 4 orders of magnitude in λ_a = Z/n.
+#
+# Step D proved §13.1/§13.2 (dual trunk + log-r) only widen the V(r)
+# SIREN; P(r) is dominated by Branch MLPs that don't see the new SIREN
+# signals.  This config widens those Branch MLPs while keeping everything
+# else from Step D intact.
+#
+# Differences vs. configs/v3_stage_a_laguerre_basis_d.yaml:
+#   * `model.d_branch`         64 → 256      (4× wider branch trunk)
+#   * `model.coeff_d_hidden`   64 → 128      (2× wider Laguerre coeff head)
+#   * `model.lambda_d_hidden`  32 → 64       (2× wider Laguerre λ head)
+#   * `model.q_corr_d_hidden`  64 → 64       (unchanged — q_corr is fine)
+#   * everything else identical to _d.yaml
+#
+# Expected effect (per §13.8 + §13.9 in the design doc):
+#   * H 7s..10s node-gate:        0/4 → ≥ 3/4
+#   * Z=16..26 n=2..7 node-gate:  ~80% → 10/10
+#   * overall 260-row node-gate:  60% → ≥ 85%
+#
+# IMPORTANT: this changes the Branch MLP shape (d_branch: 64 → 256).
+# That means the existing Step D checkpoint CANNOT be resumed directly
+# (parameter shapes mismatch).  This is a cold-start run, but it inherits
+# the §13.1 + §13.2 architecture and the "initialization = physics"
+# property from §2.3.
+
+seed: 42
+
+grid:
+  r_min: 1.0e-3
+  r_max: 250.0
+  n_grid: 512
+  scheme: loglinear
+
+coords:
+  c1: 1.0
+  c2: 1.0
+  r_eps: 1.0e-6
+  learn_map: false
+
+model:
+  n_orb_max: 16
+  n_csf_max: 8
+  # --- §13.9 Branch Capacity ---
+  d_branch: 256                  # was 64 — main fix
+  d_trunk: 128
+  n_siren_layers: 3
+  omega_0: 15.0
+  apply_lowdin: false
+
+  # --- Stage A Round 2 (Laguerre basis) ---
+  use_laguerre_basis: true
+  K_max: 9
+  learn_lambda: true
+  perturb_scale_P: 0.05
+  perturb_scale_Q: 0.05
+
+  # --- §13.9: per-head hidden widths ---
+  coeff_d_hidden: 128            # was 64
+  lambda_d_hidden: 64            # was 32
+  q_corr_d_hidden: 64            # unchanged
+
+  # --- §13.2 of 17_generalized_laguerre_basis.md ---
+  use_log_r_input: true
+  log_r_scale: 1.0
+
+  # --- §13.1 of 17_generalized_laguerre_basis.md ---
+  use_dual_trunk: true
+  d_trunk_high: 128
+  omega_0_high: 60.0
+  lambda_split: 4.0
+  gate_temperature: 2.0
+
+ci:
+  enabled: false
+  k_list: [0, 1, 2]
+  M_max: 8
+  eps_degen_meV: 1.0e-3
+  racah_cache: data_cache/racah_cache_v3.npz
+  diagonal_fill: hybrid
+
+continuum:
+  enabled: false
+
+stage_a:
+  n_epochs: 5000
+  batch_size: 8
+  weights:
+    pde: 1.0
+    ortho: 10.0
+    asym: 0.1
+    norm: 10.0
+    v_prior: 5.0
+    v_smooth: 1.0e-6
+    coeff_decay: 1.0e-3
+    lambda_prior: 1.0e-1
+    q_residual: 1.0
+  gate:
+    cos_threshold: 0.5
+    pde_threshold: 1.0e-1
+    e_orb_meV_threshold: 500.0
+
+optimizer:
+  lr_trunk: 3.0e-4
+  lr_branch: 1.0e-4
+  weight_decay: 1.0e-4
+  grad_clip: 1.0
+
+training:
+  ckpt_dir: ./checkpoints/v3_stage_a_laguerre_basis_e
+  log_dir: ./logs/v3_stage_a_laguerre_basis_e
+  val_every_epochs: 10
+  steps_per_epoch: 5
+
+dataset:
+  manifest: data_cache/manifest_hydrogenic_z1_26_n10.parquet
+  n_orb_max: 16
+  n_csf_max: 8
+
+stage_c:
+  diagonal_fill: hybrid
+  nist_inject: true

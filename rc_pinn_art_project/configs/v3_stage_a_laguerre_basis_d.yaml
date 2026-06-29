@@ -1,0 +1,128 @@
+# Stage D: Dual-trunk + log-r (implements §13.1 + §13.2 of 17_generalized_laguerre_basis.md)
+#
+# Step D extends Step C with two SIREN-trunk capacity upgrades that
+# directly target the failure modes documented in §12.4 / progress_report_step_c.md:
+#
+#   1. §13.1  Dual-trunk factorization:
+#        * low-ω₀  trunk  (ω₀ = 15) for long-range  / low-λ  (H 7s..10s)
+#        * high-ω₀ trunk  (ω₀ = 60) for short-range / high-λ  (Z>=16 low-n cusp)
+#        * soft gate  α = sigmoid((λ_a − 4) * 2)  on per-row λ_a = Z/n
+#
+#   2. §13.2  log-r auxiliary input:
+#        * trunk input augments [r, log(r), sqrt(r)] so the 7 orders of
+#          magnitude in r (1e-3 .. 250) are seen on a roughly uniform
+#          scale by the SIREN
+#
+# Differences vs. configs/v3_stage_a_laguerre_basis_c.yaml:
+#   * `model.use_log_r_input = true`
+#   * `model.use_dual_trunk  = true`
+#   * `model.d_trunk_high    = 128`     (parallel SIREN for short-range)
+#   * `model.omega_0_high    = 60.0`    (4× frequency of low trunk)
+#   * `model.lambda_split    = 4.0`     (soft-gate threshold on λ_a = Z/n)
+#   * `model.gate_temperature = 2.0`    (sigmoid sharpness)
+#   * Everything else is unchanged from _c.yaml.
+#
+# Expected effect (per §13.1 / §13.2 in the design doc):
+#   * H 7s..10s node-gate: 0/4 → ≥ 3/4   (§13.2 + §13.1 low-trunk dominates)
+#   * Z=16..26 n=2..7 node-gate: ~0% → ≥ 60% (§13.1 high-trunk dominates)
+#   * Z=1..15: unchanged at 10/10
+#   * overall 260-row node-gate: 60% → ≥ 85% (target DoD in §13.7)
+
+seed: 42
+
+grid:
+  r_min: 1.0e-3
+  r_max: 250.0
+  n_grid: 512
+  scheme: loglinear
+
+coords:
+  c1: 1.0
+  c2: 1.0
+  r_eps: 1.0e-6
+  learn_map: false
+
+model:
+  n_orb_max: 16
+  n_csf_max: 8
+  d_branch: 64
+  d_trunk: 128
+  n_siren_layers: 3
+  omega_0: 15.0
+  apply_lowdin: false
+
+  # --- Stage A Round 2 (Laguerre basis) ---
+  use_laguerre_basis: true
+  K_max: 9
+  learn_lambda: true
+  perturb_scale_P: 0.05
+  perturb_scale_Q: 0.05
+
+  # --- §13.2 of 17_generalized_laguerre_basis.md ---
+  # Auxiliary log(r) and sqrt(r) features fed into every SIREN trunk
+  # (the V SIREN, the shape_a SIRENs in the non-Laguerre path, and the
+  # q_corr SIREN).  Cheap; no extra loss terms.
+  use_log_r_input: true
+  log_r_scale: 1.0
+
+  # --- §13.1 of 17_generalized_laguerre_basis.md ---
+  # Dual-trunk factorization: low-ω₀ trunk for long-range (low-λ)
+  # orbitals, high-ω₀ trunk for short-range (high-λ) orbitals, mixed
+  # per row by a soft gate keyed on λ_a = Z/n.
+  use_dual_trunk: true
+  d_trunk_high: 128
+  omega_0_high: 60.0
+  lambda_split: 4.0
+  gate_temperature: 2.0
+
+ci:
+  enabled: false
+  k_list: [0, 1, 2]
+  M_max: 8
+  eps_degen_meV: 1.0e-3
+  racah_cache: data_cache/racah_cache_v3.npz
+  diagonal_fill: hybrid
+
+continuum:
+  enabled: false
+
+stage_a:
+  n_epochs: 5000
+  batch_size: 8
+  weights:
+    pde: 1.0
+    ortho: 10.0          # NOT 1.0 — Laguerre basis is not inherently
+                         # orthogonal across different λ; soft-constraint
+                         # is required (see §2.6 in the design doc).
+    asym: 0.1
+    norm: 10.0
+    v_prior: 5.0
+    v_smooth: 1.0e-6
+    coeff_decay: 1.0e-3
+    lambda_prior: 1.0e-1
+    q_residual: 1.0
+  gate:
+    cos_threshold: 0.5
+    pde_threshold: 1.0e-1
+    e_orb_meV_threshold: 500.0
+
+optimizer:
+  lr_trunk: 3.0e-4
+  lr_branch: 1.0e-4
+  weight_decay: 1.0e-4
+  grad_clip: 1.0
+
+training:
+  ckpt_dir: ./checkpoints/v3_stage_a_laguerre_basis_d
+  log_dir: ./logs/v3_stage_a_laguerre_basis_d
+  val_every_epochs: 10
+  steps_per_epoch: 5
+
+dataset:
+  manifest: data_cache/manifest_hydrogenic_z1_26_n10.parquet
+  n_orb_max: 16
+  n_csf_max: 8
+
+stage_c:
+  diagonal_fill: hybrid
+  nist_inject: true
